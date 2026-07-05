@@ -1,5 +1,5 @@
 import pygame
-from settings import*
+from settings import *
 
 
 class Player(pygame.sprite.Sprite):
@@ -7,8 +7,8 @@ class Player(pygame.sprite.Sprite):
         super().__init__()
         self.image = pygame.Surface((36, 48), pygame.SRCALPHA)
         pygame.draw.rect(self.image, BLUE, (0, 0, 36, 48), border_radius=8)
-        pygame.draw.rect(self.image, WHITE, (8, 12, 8, 8))
-        pygame.draw.rect(self.image, WHITE, (22, 12, 8, 8))
+        pygame.draw.rect(self.image, BLACK, (8, 12, 8, 8))
+        pygame.draw.rect(self.image, BLACK, (22, 12, 8, 8))
         self.rect = self.image.get_rect(topleft=(x, y))
 
         self.vel_x = 0
@@ -17,6 +17,11 @@ class Player(pygame.sprite.Sprite):
         self.facing_right = True
         self.alive = True
         self.spawn = (x, y)
+
+        # --- здоровье ---
+        self.max_hp = PLAYER_MAX_HP
+        self.hp = self.max_hp
+        self.invuln_timer = 0  # >0 пока действует неуязвимость после удара
 
         # --- прыжок: койот-тайм и контроль высоты по удержанию кнопки ---
         self.coyote_timer = 0        # сколько кадров ещё можно "прыгнуть с воздуха"
@@ -41,8 +46,52 @@ class Player(pygame.sprite.Sprite):
         self.is_attacking = False
         self.down_attack_active = False  # выполняется ли сейчас атака вниз
 
+    def take_damage(self, amount, knockback_dir=None):
+        """Наносит урон игроку, если он не в состоянии неуязвимости.
+        knockback_dir: -1 (влево) или 1 (вправо) — куда отбросить игрока.
+        Если не указано, отбрасывает в сторону, противоположную взгляду."""
+        if self.invuln_timer > 0 or not self.alive:
+            return
+
+        self.hp -= amount
+        self.invuln_timer = PLAYER_INVULN_FRAMES
+
+        if knockback_dir is None:
+            knockback_dir = -1 if self.facing_right else 1
+        self.vel_x = knockback_dir * KNOCKBACK_SPEED_X
+        self.vel_y = KNOCKBACK_SPEED_Y
+
+        if self.hp <= 0:
+            self.hp = 0
+            self.alive = False
+
+    def reset_position(self, x, y):
+        """Телепортирует игрока в новую точку (переход между комнатами).
+        HP и счёт не трогает — только позицию и переходные таймеры движения,
+        чтобы игрок не влетел в новую комнату посреди дэша/атаки/прыжка."""
+        self.rect.topleft = (x, y)
+        self.vel_x = 0
+        self.vel_y = 0
+        self.on_ground = False
+
+        self.coyote_timer = 0
+        self.is_jumping = False
+        self.air_jumps_used = 0
+
+        self.is_dashing = False
+        self.dash_timer = 0
+        self.trail = []
+
+        self.is_attacking = False
+        self.attack_timer = 0
+        self.down_attack_active = False
+
     def update(self, platforms):
         keys = pygame.key.get_pressed()
+
+        # Неуязвимость после удара тикает каждый кадр независимо от прочей логики
+        if self.invuln_timer > 0:
+            self.invuln_timer -= 1
 
         jump_held = keys[pygame.K_SPACE] or keys[pygame.K_UP] or keys[pygame.K_w]
         dash_held = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
@@ -150,8 +199,10 @@ class Player(pygame.sprite.Sprite):
         self.on_ground = False
         self.collide(platforms, "y")
 
+        # Падение в пропасть — мгновенная смерть независимо от HP (как яма в HK)
         if self.rect.top > HEIGHT + 100:
             self.alive = False
+            self.hp = 0
 
         # --- анимация дэша: копим и старим "призраков" позади игрока ---
         for ghost in self.trail:

@@ -1,20 +1,17 @@
 import pygame
 import sys
-from settings import*
+from settings import *
 
-# game.py
 from sprites.player import Player
-from sprites.platforms import Platform
-from sprites.coins import Coin
-from sprites.enemy import Enemy
-from sprites.flag import Flag
+from rooms import build_room, first_room_id
 
 
 class Game:
     def __init__(self):
         pygame.init()
+
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
-        pygame.display.set_caption("2D Платформер")
+        pygame.display.set_caption("Холлоу найт but better")
         self.clock = pygame.time.Clock()
 
         self.font = pygame.font.SysFont("Arial", 28, bold=True)
@@ -22,17 +19,26 @@ class Game:
         self.big_font = pygame.font.SysFont("Arial", 48, bold=True)
         self.title_font = pygame.font.SysFont("Arial", 64, bold=True)
 
+
         self.running = True
         self.score = 0
 
-        # игровой мир — создаётся заново при старте/рестарте
-        self.player = None
-        self.platforms = None
+        # --- комнаты ---
+        self.room = None        # текущий объект Room целиком
+        self.room_id = None     # id текущей комнаты (ключ в ROOM_BUILDERS)
+        self.platforms = None   # ссылки на группы спрайтов ТЕКУЩЕЙ комнаты
         self.coins = None
         self.enemies = None
         self.flag = None
         self.level_width = 0
         self.camera_x = 0
+
+        self.backgrounds_dict = {
+            "forest": pygame.image.load("images/forest.png").convert(),
+            "caves": pygame.image.load("images/caves.png").convert()
+        }
+
+        self.player = None
 
         # состояние, в которое нужно перейти после текущего кадра
         self.state = None
@@ -44,9 +50,31 @@ class Game:
         self.next_state = new_state
 
     def new_level(self):
-        self.player = Player(50, HEIGHT - 100)
-        self.platforms, self.coins, self.enemies, self.flag, self.level_width = build_level()
+        """Полный рестарт: новый игрок (свежий HP/счёт) и первая комната."""
         self.score = 0
+        self.player = None
+        self.load_room(first_room_id(), "default")
+
+    def load_room(self, room_id, entry_side="default"):
+        """Загружает комнату по id и ставит игрока в точку появления,
+        соответствующую стороне, с которой он вошёл (entry_side)."""
+        self.room_id = room_id
+        self.room = build_room(room_id)
+
+        self.platforms = self.room.platforms
+        self.coins = self.room.coins
+        self.enemies = self.room.enemies
+        self.flag = self.room.flag
+        self.level_width = self.room.width
+
+        spawn_x, spawn_y = self.room.get_spawn(entry_side)
+
+        if self.player is None:
+            self.player = Player(spawn_x, spawn_y)
+        else:
+            # телепортируем существующего игрока — HP и счёт сохраняются
+            self.player.reset_position(spawn_x, spawn_y)
+
         self.camera_x = 0
 
     def run(self):
@@ -70,6 +98,7 @@ class Game:
 
         pygame.quit()
         sys.exit()
+
 
 class State:
     """Базовый интерфейс состояния игры."""
@@ -107,25 +136,19 @@ class MenuState(State):
         self.time += 1
 
     def draw(self, screen):
-        screen.fill(SKY_BLUE)
-
-        for i in range(4):
-            cx = (i * 260 + int(self.time * 0.5)) % (WIDTH + 200) - 100
-            cy = 80 + i * 60
-            pygame.draw.ellipse(screen, WHITE, (cx, cy, 120, 40))
-            pygame.draw.ellipse(screen, WHITE, (cx + 30, cy - 15, 90, 40))
+        draw_dark_background(screen, self.time)
 
         g = self.game
-        draw_text_centered(screen, "2D ПЛАТФОРМЕР", g.title_font, DARK_GREEN, HEIGHT // 2 - 100)
-        draw_text_centered(screen, "Нажми ПРОБЕЛ или ENTER, чтобы начать", g.font, BLACK, HEIGHT // 2 + 10)
+        draw_text_centered(screen, "2D ПЛАТФОРМЕР", g.title_font, MASK_FULL, HEIGHT // 2 - 100)
+        draw_text_centered(screen, "Нажми ПРОБЕЛ или ENTER, чтобы начать", g.font, WHITE, HEIGHT // 2 + 10)
         draw_text_centered(screen, "Управление: A/D или стрелки — движение, SPACE/W — прыжок",
-                            g.small_font, BLACK, HEIGHT // 2 + 60)
+                            g.small_font, GRAY, HEIGHT // 2 + 60)
         draw_text_centered(screen, "Двойной прыжок в воздухе, SHIFT — рывок (дэш)",
-                            g.small_font, BLACK, HEIGHT // 2 + 85)
+                            g.small_font, GRAY, HEIGHT // 2 + 85)
         draw_text_centered(screen, "J/X — атака, вниз+J в воздухе — удар вниз",
-                            g.small_font, BLACK, HEIGHT // 2 + 108)
+                            g.small_font, GRAY, HEIGHT // 2 + 108)
         draw_text_centered(screen, "P/ESC — пауза, R — рестарт, ESC в меню — выход",
-                            g.small_font, BLACK, HEIGHT // 2 + 131)
+                            g.small_font, GRAY, HEIGHT // 2 + 131)
 
 
 # ===========================================================
@@ -161,7 +184,6 @@ class PlayingState(State):
                     enemy.kill()
                     hit_someone = True
             if hit_someone:
-                # удачная атака вниз подбрасывает игрока — как в классических "boots"
                 g.player.vel_y = DOWN_ATTACK_BOUNCE
                 g.player.down_attack_active = False
 
@@ -175,13 +197,20 @@ class PlayingState(State):
                         enemy.kill()
                         g.player.vel_y = JUMP_STRENGTH / 1.5
                     else:
-                        g.player.alive = False
+                        knockback_dir = -1 if g.player.rect.centerx < enemy.rect.centerx else 1
+                        g.player.take_damage(ENEMY_CONTACT_DAMAGE, knockback_dir)
 
         if not g.player.alive:
             g.change_state(LostState(g))
             return
 
-        if g.player.rect.colliderect(g.flag.rect):
+        # --- двери между комнатами: касание триггерит фейд-переход ---
+        for room_exit in g.room.exits:
+            if g.player.rect.colliderect(room_exit.rect):
+                g.change_state(TransitionState(g, room_exit.target_room, room_exit.entry_side))
+                return
+
+        if g.flag is not None and g.player.rect.colliderect(g.flag.rect):
             g.change_state(WonState(g))
             return
 
@@ -190,6 +219,45 @@ class PlayingState(State):
 
     def draw(self, screen):
         draw_world(self.game, screen)
+
+
+# ===========================================================
+# СОСТОЯНИЕ: ПЕРЕХОД МЕЖДУ КОМНАТАМИ (fade-to-black, как в Hollow Knight)
+# ===========================================================
+class TransitionState(State):
+    """Пока экран полностью не почернел, игрок видит старую комнату — она "замирает"
+    (update() комнаты не вызывается). В момент полного затемнения подменяем комнату
+    и плавно проявляемся обратно уже в новом месте."""
+
+    def __init__(self, game, target_room, entry_side):
+        super().__init__(game)
+        self.target_room = target_room
+        self.entry_side = entry_side
+        self.phase = "out"   # "out" -> "in"
+        self.timer = 0
+        self.alpha = 0
+
+    def update(self):
+        self.timer += 1
+
+        if self.phase == "out":
+            progress = min(1.0, self.timer / ROOM_TRANSITION_FADE_FRAMES)
+            self.alpha = int(255 * progress)
+            if self.timer >= ROOM_TRANSITION_FADE_FRAMES:
+                self.game.load_room(self.target_room, self.entry_side)
+                self.phase = "in"
+                self.timer = 0
+        else:  # "in"
+            progress = min(1.0, self.timer / ROOM_TRANSITION_FADE_FRAMES)
+            self.alpha = int(255 * (1 - progress))
+            if self.timer >= ROOM_TRANSITION_FADE_FRAMES:
+                self.game.change_state(PlayingState(self.game))
+
+    def draw(self, screen):
+        draw_world(self.game, screen)
+        overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, self.alpha))
+        screen.blit(overlay, (0, 0))
 
 
 # ===========================================================
@@ -260,42 +328,9 @@ class LostState(State):
         draw_text_centered(screen, "R — рестарт  •  M — меню", g.font, WHITE, HEIGHT // 2 + 20)
 
 
-
-def build_level():
-    platforms = pygame.sprite.Group()
-    coins = pygame.sprite.Group()
-    enemies = pygame.sprite.Group()
-
-    level_data = [
-        (0, HEIGHT - 40, 300, 40),
-        (380, HEIGHT - 40, 300, 40),
-        (760, HEIGHT - 40, 400, 40),
-        (250, HEIGHT - 150, 150, 20),
-        (500, HEIGHT - 230, 150, 20),
-        (700, HEIGHT - 330, 150, 20),
-        (900, HEIGHT - 420, 200, 20),
-    ]
-    for (x, y, w, h) in level_data:
-        platforms.add(Platform(x, y, w, h))
-
-    coin_positions = [
-        (300, HEIGHT - 180), (330, HEIGHT - 180),
-        (550, HEIGHT - 260), (580, HEIGHT - 260),
-        (750, HEIGHT - 360), (780, HEIGHT - 360),
-        (950, HEIGHT - 450), (980, HEIGHT - 450), (1020, HEIGHT - 450),
-    ]
-    for (x, y) in coin_positions:
-        coins.add(Coin(x, y))
-
-    enemies.add(Enemy(400, HEIGHT - 40 - 32, 380, 660))
-    enemies.add(Enemy(780, HEIGHT - 40 - 32, 760, 1140))
-
-    flag = Flag(1070, HEIGHT - 420 - 70)
-
-    level_width = 1200
-    return platforms, coins, enemies, flag, level_width
-
-
+# ===========================================================
+# ОТРИСОВКА
+# ===========================================================
 def draw_overlay(screen):
     overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     overlay.fill(DARK_OVERLAY)
@@ -309,8 +344,53 @@ def draw_text_centered(screen, text, font, color, y, x=WIDTH // 2):
     return rect
 
 
+def draw_dark_background(screen, time_counter):
+    """Тёмный фон с медленно плывущими 'спорами' — атмосфера в духе Hollow Knight."""
+    screen.fill(DARK_BG)
+
+    for i in range(3):
+        bx = (i * 340 + int(time_counter * 0.15)) % (WIDTH + 300) - 150
+        by = HEIGHT - 80 - (i % 2) * 40
+        pygame.draw.ellipse(screen, DARK_BG_MID, (bx, by, 260, 160))
+
+    for i in range(14):
+        px = (i * 97 + int(time_counter * (0.4 + (i % 3) * 0.2))) % (WIDTH + 40) - 20
+        py = (i * 53) % HEIGHT
+        radius = 2 + (i % 3)
+        spore_surf = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+        pygame.draw.circle(spore_surf, (*FOG_COLOR, 90), (radius, radius), radius)
+        screen.blit(spore_surf, (px, py))
+
+
+def draw_hp_bar(screen, player):
+    """Полоски здоровья в виде 'масок' — как жизни рыцаря в Hollow Knight."""
+    mask_size = 22
+    gap = 8
+    x0, y0 = 20, 50
+
+    for i in range(player.max_hp):
+        cx = x0 + i * (mask_size + gap) + mask_size // 2
+        cy = y0 + mask_size // 2
+        half = mask_size // 2
+        points = [
+            (cx, cy - half),
+            (cx + half, cy),
+            (cx, cy + half),
+            (cx - half, cy),
+        ]
+        color = MASK_FULL if i < player.hp else MASK_EMPTY
+        pygame.draw.polygon(screen, color, points)
+        pygame.draw.polygon(screen, MASK_OUTLINE, points, 2)
+
+def draw_background_image(screen, image):
+    screen.blit(image, (0, 0))
+
+ 
 def draw_world(game: Game, screen):
-    screen.fill(SKY_BLUE)
+    if (game.room_id == "forest" or game.room_id == "caves"):
+        draw_background_image(screen, game.backgrounds_dict[game.room_id])
+    else:
+        draw_dark_background(screen, pygame.time.get_ticks() // 16)
     cam = game.camera_x
 
     for plat in game.platforms:
@@ -322,7 +402,8 @@ def draw_world(game: Game, screen):
     for enemy in game.enemies:
         screen.blit(enemy.image, enemy.rect.move(-cam, 0))
 
-    screen.blit(game.flag.image, game.flag.rect.move(-cam, 0))
+    if game.flag is not None:
+        screen.blit(game.flag.image, game.flag.rect.move(-cam, 0))
 
     # --- шлейф дэша: гаснущие "призраки" позади игрока ---
     for ghost in game.player.trail:
@@ -336,18 +417,19 @@ def draw_world(game: Game, screen):
         screen.blit(ghost_surf, ghost_rect)
 
     player_rect = game.player.rect.move(-cam, 0)
-    if game.player.is_dashing:
-        # лёгкое растяжение спрайта по направлению рывка — усиливает ощущение скорости
-        stretched = pygame.transform.smoothscale(
-            game.player.image,
-            (int(player_rect.width * 1.3), int(player_rect.height * 0.8)),
-        )
-        stretched_rect = stretched.get_rect(center=player_rect.center)
-        screen.blit(stretched, stretched_rect)
-    else:
-        screen.blit(game.player.image, player_rect)
+    flickering = game.player.invuln_timer > 0 and (game.player.invuln_timer // 4) % 2 == 0
 
-    # --- визуализация обычной атаки: белая дуга-полоса сбоку от игрока ---
+    if not flickering:
+        if game.player.is_dashing:
+            stretched = pygame.transform.smoothscale(
+                game.player.image,
+                (int(player_rect.width * 1.3), int(player_rect.height * 0.8)),
+            )
+            stretched_rect = stretched.get_rect(center=player_rect.center)
+            screen.blit(stretched, stretched_rect)
+        else:
+            screen.blit(game.player.image, player_rect)
+
     attack_rect = game.player.get_attack_rect()
     if attack_rect is not None:
         r = attack_rect.move(-cam, 0)
@@ -355,7 +437,6 @@ def draw_world(game: Game, screen):
         pygame.draw.ellipse(slash_surf, (*WHITE, 200), slash_surf.get_rect())
         screen.blit(slash_surf, r)
 
-    # --- визуализация атаки вниз: жёлтый клин под ногами игрока ---
     down_attack_rect = game.player.get_down_attack_rect()
     if down_attack_rect is not None:
         r = down_attack_rect.move(-cam, 0)
@@ -366,5 +447,6 @@ def draw_world(game: Game, screen):
         )
         screen.blit(spike_surf, r)
 
-    score_text = game.font.render(f"Монеты: {game.score}", True, BLACK)
+    score_text = game.font.render(f"Монеты: {game.score}", True, WHITE)
     screen.blit(score_text, (16, 12))
+    draw_hp_bar(screen, game.player)

@@ -21,7 +21,7 @@ class Room:
     """
 
     def __init__(self, platforms, coins, enemies, width, height,
-                 flag=None, exits=None, spawn_points=None, background = None):
+                 flag=None, exits=None, spawn_points=None, weapons=None):
         self.platforms = platforms
         self.coins = coins
         self.enemies = enemies
@@ -29,11 +29,12 @@ class Room:
         self.height = height
         self.flag = flag                       # флаг финиша — обычно только в одной "конечной" комнате
         self.exits = exits or []               # список RoomExit
-        self.spawn_points = spawn_points or {}
-        self.background = background  # side -> (x, y)
+        self.spawn_points = spawn_points or {}  # side -> (x, y)
+        # weapons — необязательный параметр: большинство комнат оружия не содержат,
+        # тогда просто создаётся пустая группа
+        self.weapons = weapons if weapons is not None else pygame.sprite.Group()
 
     def get_spawn(self, entry_side):
         return (self.spawn_points.get(entry_side)
                 or self.spawn_points.get("default")
                 or (50, self.height - 100))
-    

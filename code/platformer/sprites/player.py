@@ -45,6 +45,10 @@ class Player(pygame.sprite.Sprite):
         self.attack_cooldown_timer = 0   # общий откат для обеих атак
         self.is_attacking = False
         self.down_attack_active = False  # выполняется ли сейчас атака вниз
+        self.attack_hit_ids = set()      # какие враги уже получили урон в текущем ударе
+
+        # --- оружие ---
+        self.weapon_id = "basic"  # см. WEAPON_ICON_PATHS / WEAPON_DAMAGE в settings.py
 
     def take_damage(self, amount, knockback_dir=None):
         """Наносит урон игроку, если он не в состоянии неуязвимости.
@@ -85,6 +89,11 @@ class Player(pygame.sprite.Sprite):
         self.is_attacking = False
         self.attack_timer = 0
         self.down_attack_active = False
+        self.attack_hit_ids = set()
+
+    def equip_weapon(self, weapon_id):
+        """Меняет текущее оружие игрока (подбор WeaponPickup)."""
+        self.weapon_id = weapon_id
 
     def update(self, platforms):
         keys = pygame.key.get_pressed()
@@ -176,6 +185,7 @@ class Player(pygame.sprite.Sprite):
                     self.is_attacking = True
                     self.attack_timer = ATTACK_DURATION_FRAMES
                     self.attack_cooldown_timer = ATTACK_COOLDOWN_FRAMES
+                    self.attack_hit_ids = set()  # новый удар — список поражённых врагов чист
 
             if self.is_attacking:
                 self.attack_timer -= 1

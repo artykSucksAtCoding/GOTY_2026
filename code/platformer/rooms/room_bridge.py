@@ -3,6 +3,7 @@ from settings import *
 from sprites.platforms import Platform
 from sprites.coins import Coin
 from sprites.enemy import Enemy
+from sprites.weapon_pickup import WeaponPickup
 from .base import Room, RoomExit
 
 ROOM_WIDTH = 1300
@@ -24,6 +25,8 @@ def build():
         (540, BRIDGE_Y, 180, 40),    # провал 80px
         (800, BRIDGE_Y, 180, 40),    # провал 80px
         (1060, BRIDGE_Y, 240, 40),   # провал 80px, последний сегмент доходит до края комнаты
+        # уединённая площадка над провалом — сюда не дойти по земле, только прыжком
+        (605, BRIDGE_Y - 150, 60, 14),
     ]
     for (x, y, w, h) in level_data:
         platforms.add(Platform(x, y, w, h))
@@ -44,6 +47,11 @@ def build():
     enemies.add(Enemy(300, BRIDGE_Y - 32, 280, 460))
     enemies.add(Enemy(560, BRIDGE_Y - 32, 540, 720))
     enemies.add(Enemy(820, BRIDGE_Y - 32, 800, 980))
+
+    # --- оружие: sword2 (2 урона), небольшой паркур — нужно допрыгнуть
+    # с одного из сегментов до уединённой площадки над провалом ---
+    weapons = pygame.sprite.Group()
+    weapons.add(WeaponPickup(615, BRIDGE_Y - 150 - WEAPON_PICKUP_SIZE, "sword2"))
 
     exits = [
         RoomExit(
@@ -66,5 +74,5 @@ def build():
 
     return Room(
         platforms, coins, enemies, ROOM_WIDTH, ROOM_HEIGHT,
-        flag=None, exits=exits, spawn_points=spawn_points,
+        flag=None, exits=exits, spawn_points=spawn_points, weapons=weapons,
     )

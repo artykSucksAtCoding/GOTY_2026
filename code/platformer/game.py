@@ -19,7 +19,6 @@ class Game:
         self.big_font = pygame.font.SysFont("Arial", 48, bold=True)
         self.title_font = pygame.font.SysFont("Arial", 64, bold=True)
 
-
         self.running = True
         self.score = 0
 
@@ -29,16 +28,43 @@ class Game:
         self.platforms = None   # ссылки на группы спрайтов ТЕКУЩЕЙ комнаты
         self.coins = None
         self.enemies = None
+        self.weapons = None
         self.flag = None
         self.level_width = 0
         self.camera_x = 0
 
+        # --- кастомные фоны комнат: room_id -> Surface ---
+        # .get() при отрисовке подстрахует комнаты, для которых картинки ещё нет —
+        # тогда просто используется процедурный тёмный фон
         self.backgrounds_dict = {
-            "forest": pygame.image.load("images/forest.png").convert(),
-            "caves": pygame.image.load("images/caves.png").convert()
+            "forest": pygame.image.load("images/backgrounds/forest.png").convert(),
+            "caves": pygame.image.load("images/backgrounds/caves.png").convert(),
         }
 
+        # --- иконки оружия для HUD: weapon_id -> Surface ---
+        self.weapon_icons = {}
+        for weapon_id, icon_path in WEAPON_ICON_PATHS.items():
+            try:
+                icon = pygame.image.load(icon_path).convert_alpha()
+                icon = pygame.transform.smoothscale(icon, (WEAPON_ICON_HUD_SIZE, WEAPON_ICON_HUD_SIZE))
+            except (pygame.error, FileNotFoundError):
+                # заглушка, пока реальная иконка не подключена по этому пути
+                icon = pygame.Surface((WEAPON_ICON_HUD_SIZE, WEAPON_ICON_HUD_SIZE), pygame.SRCALPHA)
+                pygame.draw.rect(icon, YELLOW, icon.get_rect(), border_radius=6)
+            self.weapon_icons[weapon_id] = icon
+
         self.player = None
+
+        # --- музыка ---
+        # Играет одна и та же дорожка во всех комнатах без перезапуска —
+        # грузим и запускаем один раз здесь, дальше только меняем громкость.
+        try:
+            pygame.mixer.music.load(MUSIC_PATH)
+            pygame.mixer.music.set_volume(MUSIC_VOLUME_NORMAL)
+            pygame.mixer.music.play(loops=-1)  # зациклена бесконечно
+        except pygame.error:
+            # музыки ещё нет по этому пути — просто играем без звука
+            pass
 
         # состояние, в которое нужно перейти после текущего кадра
         self.state = None
@@ -50,7 +76,7 @@ class Game:
         self.next_state = new_state
 
     def new_level(self):
-        """Полный рестарт: новый игрок (свежий HP/счёт) и первая комната."""
+        """Полный рестарт: новый игрок (свежий HP/счёт/оружие) и первая комната."""
         self.score = 0
         self.player = None
         self.load_room(first_room_id(), "default")
@@ -64,6 +90,7 @@ class Game:
         self.platforms = self.room.platforms
         self.coins = self.room.coins
         self.enemies = self.room.enemies
+        self.weapons = self.room.weapons
         self.flag = self.room.flag
         self.level_width = self.room.width
 
@@ -72,7 +99,7 @@ class Game:
         if self.player is None:
             self.player = Player(spawn_x, spawn_y)
         else:
-            # телепортируем существующего игрока — HP и счёт сохраняются
+            # телепортируем существующего игрока — HP, счёт и оружие сохраняются
             self.player.reset_position(spawn_x, spawn_y)
 
         self.camera_x = 0
@@ -105,6 +132,13 @@ class State:
 
     def __init__(self, game: Game):
         self.game = game
+        # Любое состояние, кроме паузы, должно звучать на обычной громкости —
+        # восстанавливаем её здесь; PausedState сам приглушит музыку сразу после
+        # вызова super().__init__() в своём конструкторе.
+        try:
+            pygame.mixer.music.set_volume(MUSIC_VOLUME_NORMAL)
+        except pygame.error:
+            pass
 
     def handle_event(self, event):
         pass
@@ -165,25 +199,38 @@ class PlayingState(State):
         g.player.update(g.platforms)
         g.enemies.update()
         g.coins.update()
+        g.weapons.update()
 
         collected = pygame.sprite.spritecollide(g.player, g.coins, dokill=True)
         g.score += len(collected)
 
-        # --- атаки убивают врагов раньше, чем сработает урон от простого касания ---
+        # --- подбор оружия ---
+        picked_weapons = pygame.sprite.spritecollide(g.player, g.weapons, dokill=True)
+        for weapon in picked_weapons:
+            g.player.equip_weapon(weapon.weapon_id)
+
+        current_damage = WEAPON_DAMAGE[g.player.weapon_id]
+
+        # --- атаки наносят врагам урон текущим оружием (раньше, чем сработает
+        # урон от простого касания) ---
         attack_rect = g.player.get_attack_rect()
         if attack_rect is not None:
             for enemy in list(g.enemies):
-                if attack_rect.colliderect(enemy.rect):
-                    enemy.kill()
+                # attack_hit_ids не даёт одному взмаху бить одного врага несколько
+                # кадров подряд, пока активен хитбокс
+                if attack_rect.colliderect(enemy.rect) and id(enemy) not in g.player.attack_hit_ids:
+                    g.player.attack_hit_ids.add(id(enemy))
+                    enemy.take_damage(current_damage)
 
         down_attack_rect = g.player.get_down_attack_rect()
         if down_attack_rect is not None:
             hit_someone = False
             for enemy in list(g.enemies):
                 if down_attack_rect.colliderect(enemy.rect):
-                    enemy.kill()
+                    enemy.take_damage(current_damage)
                     hit_someone = True
             if hit_someone:
+                # удачная атака вниз подбрасывает игрока — как в классических "boots"
                 g.player.vel_y = DOWN_ATTACK_BOUNCE
                 g.player.down_attack_active = False
 
@@ -194,6 +241,7 @@ class PlayingState(State):
             for enemy in g.enemies:
                 if g.player.rect.colliderect(enemy.rect):
                     if g.player.vel_y > 0 and g.player.rect.bottom - enemy.rect.top < 20:
+                        # запрыгнули врагу на голову — мгновенная смерть врага, урон не наносится игроку
                         enemy.kill()
                         g.player.vel_y = JUMP_STRENGTH / 1.5
                     else:
@@ -264,6 +312,14 @@ class TransitionState(State):
 # СОСТОЯНИЕ: ПАУЗА
 # ===========================================================
 class PausedState(State):
+    def __init__(self, game):
+        super().__init__(game)
+        # super().__init__ уже выставил обычную громкость — сразу приглушаем поверх неё
+        try:
+            pygame.mixer.music.set_volume(MUSIC_VOLUME_PAUSED)
+        except pygame.error:
+            pass
+
     def handle_event(self, event):
         if event.type == pygame.KEYDOWN:
             if event.key in (pygame.K_ESCAPE, pygame.K_p):
@@ -345,7 +401,8 @@ def draw_text_centered(screen, text, font, color, y, x=WIDTH // 2):
 
 
 def draw_dark_background(screen, time_counter):
-    """Тёмный фон с медленно плывущими 'спорами' — атмосфера в духе Hollow Knight."""
+    """Тёмный фон с медленно плывущими 'спорами' — атмосфера в духе Hollow Knight.
+    Используется как fallback, пока для комнаты не задана кастомная картинка."""
     screen.fill(DARK_BG)
 
     for i in range(3):
@@ -360,6 +417,10 @@ def draw_dark_background(screen, time_counter):
         spore_surf = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
         pygame.draw.circle(spore_surf, (*FOG_COLOR, 90), (radius, radius), radius)
         screen.blit(spore_surf, (px, py))
+
+
+def draw_background_image(screen, image):
+    screen.blit(image, (0, 0))
 
 
 def draw_hp_bar(screen, player):
@@ -382,15 +443,30 @@ def draw_hp_bar(screen, player):
         pygame.draw.polygon(screen, color, points)
         pygame.draw.polygon(screen, MASK_OUTLINE, points, 2)
 
-def draw_background_image(screen, image):
-    screen.blit(image, (0, 0))
 
- 
+def draw_weapon_icon(screen, game):
+    """Иконка текущего оружия — сразу справа от полосок здоровья."""
+    icon = game.weapon_icons.get(game.player.weapon_id)
+    if icon is None:
+        return
+
+    mask_size = 22
+    gap = 8
+    x0, y0 = 20, 50
+    hp_row_width = game.player.max_hp * (mask_size + gap)
+
+    x = x0 + hp_row_width + 12
+    y = y0 - 3
+    screen.blit(icon, (x, y))
+
+
 def draw_world(game: Game, screen):
-    if (game.room_id == "forest" or game.room_id == "caves"):
-        draw_background_image(screen, game.backgrounds_dict[game.room_id])
+    bg_image = game.backgrounds_dict.get(game.room_id)
+    if bg_image is not None:
+        draw_background_image(screen, bg_image)
     else:
         draw_dark_background(screen, pygame.time.get_ticks() // 16)
+
     cam = game.camera_x
 
     for plat in game.platforms:
@@ -398,6 +474,9 @@ def draw_world(game: Game, screen):
 
     for coin in game.coins:
         screen.blit(coin.image, coin.rect.move(-cam, 0))
+
+    for weapon in game.weapons:
+        screen.blit(weapon.image, weapon.rect.move(-cam, 0))
 
     for enemy in game.enemies:
         screen.blit(enemy.image, enemy.rect.move(-cam, 0))
@@ -450,3 +529,4 @@ def draw_world(game: Game, screen):
     score_text = game.font.render(f"Монеты: {game.score}", True, WHITE)
     screen.blit(score_text, (16, 12))
     draw_hp_bar(screen, game.player)
+    draw_weapon_icon(screen, game)

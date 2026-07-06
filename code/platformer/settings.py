@@ -111,3 +111,11 @@ FOG_COLOR = (120, 160, 170)
 MUSIC_PATH = "sound/theme.mp3"
 MUSIC_VOLUME_NORMAL = 0.6   # громкость во время обычной игры
 MUSIC_VOLUME_PAUSED = 0.15  # громкость, когда игра на паузе (не выключаем совсем, просто тише)
+
+# --- Звук гейм-овера ---
+GAME_OVER_SOUND_PATH = "sound/game_over.wav" 
+ # плейсхолдер — подставь свой файл
+GAME_OVER_SOUND_VOLUME = 0.8  # громкость, когда игра на паузе (не выключаем совсем, просто тише)
+
+ATTACK_SOUND_PATH = "sound/attack.mp3"
+DASH_SOUND_PATH = "sound/dash.mp3"

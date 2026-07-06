@@ -11,6 +11,8 @@ class Player(pygame.sprite.Sprite):
         pygame.draw.rect(self.image, BLACK, (22, 12, 8, 8))
         self.rect = self.image.get_rect(topleft=(x, y))
 
+
+
         self.vel_x = 0
         self.vel_y = 0
         self.on_ground = False
@@ -49,6 +51,11 @@ class Player(pygame.sprite.Sprite):
 
         # --- оружие ---
         self.weapon_id = "basic"  # см. WEAPON_ICON_PATHS / WEAPON_DAMAGE в settings.py
+
+
+        # --- саунд эффекты ---
+        self.attack_sound = pygame.mixer.Sound(ATTACK_SOUND_PATH)
+        self.dash_sound =  pygame.mixer.Sound(DASH_SOUND_PATH)
 
     def take_damage(self, amount, knockback_dir=None):
         """Наносит урон игроку, если он не в состоянии неуязвимости.
@@ -127,6 +134,7 @@ class Player(pygame.sprite.Sprite):
         self.dash_held_prev = dash_held
 
         if self.is_dashing:
+            self.dash_sound.play()
             # Во время рывка — фиксированная горизонтальная скорость, гравитация не действует
             self.vel_x = self.dash_dir * DASH_SPEED
             self.vel_y = 0
@@ -242,6 +250,8 @@ class Player(pygame.sprite.Sprite):
         """Хитбокс обычной атаки — прямоугольник сбоку от игрока, куда он смотрит."""
         if not self.is_attacking:
             return None
+        self.attack_sound.play()
+        # pygame.mixer.music.set_volume(MUSIC_VOLUME_NORMAL)
         if self.facing_right:
             x = self.rect.right
         else:

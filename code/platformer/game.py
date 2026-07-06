@@ -39,6 +39,8 @@ class Game:
         self.backgrounds_dict = {
             "forest": pygame.image.load("images/backgrounds/forest.png").convert(),
             "caves": pygame.image.load("images/backgrounds/caves.png").convert(),
+            "bridge": pygame.image.load("images/backgrounds/bridge.png").convert(),
+            "vault": pygame.image.load("images/backgrounds/vault.png").convert()
         }
 
         # --- иконки оружия для HUD: weapon_id -> Surface ---
@@ -56,30 +58,57 @@ class Game:
         self.player = None
 
         # --- музыка ---
-        # Играет одна и та же дорожка во всех комнатах без перезапуска —
-        # грузим и запускаем один раз здесь, дальше только меняем громкость.
+        # Только ЗАГРУЖАЕМ дорожку здесь — играть она начнёт не сразу, а лишь когда
+        # игрок реально нажмёт "играть" (см. new_level() -> start_music()).
+        # Поэтому в главном меню музыки нет вообще.
+        self._music_loaded = False
         try:
             pygame.mixer.music.load(MUSIC_PATH)
-            pygame.mixer.music.set_volume(MUSIC_VOLUME_NORMAL)
-            pygame.mixer.music.play(loops=-1)  # зациклена бесконечно
+            self._music_loaded = True
         except pygame.error:
-            # музыки ещё нет по этому пути — просто играем без звука
             pass
+
+        # --- звук гейм-овера (одноразовый, не музыкальный канал) ---
+        try:
+            self.gameover_sound = pygame.mixer.Sound(GAME_OVER_SOUND_PATH)
+            self.gameover_sound.set_volume(GAME_OVER_SOUND_VOLUME)
+        except pygame.error:
+            self.gameover_sound = None
 
         # состояние, в которое нужно перейти после текущего кадра
         self.state = None
         self.next_state = None
         self.change_state(MenuState(self))
 
+    def start_music(self):
+        """Запускает фоновую музыку с начала. Вызывается только когда игрок
+        реально начинает партию — из new_level() (старт из меню или рестарт)."""
+        if not self._music_loaded:
+            return
+        try:
+            pygame.mixer.music.play(loops=-1)
+            pygame.mixer.music.set_volume(MUSIC_VOLUME_NORMAL)
+        except pygame.error:
+            pass
+
+    def stop_music(self):
+        """Полностью останавливает музыку (гейм-овер, возврат в меню)."""
+        try:
+            pygame.mixer.music.stop()
+        except pygame.error:
+            pass
+
     def change_state(self, new_state):
         """Запрашивает смену состояния — произойдёт в начале следующего кадра."""
         self.next_state = new_state
 
     def new_level(self):
-        """Полный рестарт: новый игрок (свежий HP/счёт/оружие) и первая комната."""
+        """Полный рестарт: новый игрок (свежий HP/счёт/оружие), первая комната,
+        и именно отсюда стартует музыка — по нажатию "играть"/рестарт, не раньше."""
         self.score = 0
         self.player = None
         self.load_room(first_room_id(), "default")
+        self.start_music()
 
     def load_room(self, room_id, entry_side="default"):
         """Загружает комнату по id и ставит игрока в точку появления,
@@ -157,6 +186,9 @@ class MenuState(State):
     def __init__(self, game):
         super().__init__(game)
         self.time = 0
+        # В главном меню музыки быть не должно — глушим на случай возврата
+        # сюда через M из паузы/победы/поражения
+        self.game.stop_music()
 
     def handle_event(self, event):
         if event.type == pygame.KEYDOWN:
@@ -173,7 +205,7 @@ class MenuState(State):
         draw_dark_background(screen, self.time)
 
         g = self.game
-        draw_text_centered(screen, "2D ПЛАТФОРМЕР", g.title_font, MASK_FULL, HEIGHT // 2 - 100)
+        draw_text_centered(screen, "МЕГА-ПЛАТФОРМЕР", g.title_font, MASK_FULL, HEIGHT // 2 - 100)
         draw_text_centered(screen, "Нажми ПРОБЕЛ или ENTER, чтобы начать", g.font, WHITE, HEIGHT // 2 + 10)
         draw_text_centered(screen, "Управление: A/D или стрелки — движение, SPACE/W — прыжок",
                             g.small_font, GRAY, HEIGHT // 2 + 60)
@@ -366,6 +398,14 @@ class WonState(State):
 # СОСТОЯНИЕ: ПОРАЖЕНИЕ
 # ===========================================================
 class LostState(State):
+    def __init__(self, game):
+        super().__init__(game)
+        # Музыка полностью замолкает на гейм-овере (не просто тише, как на паузе) —
+        # играть заново начнёт только после рестарта, из new_level()
+        self.game.stop_music()
+        if self.game.gameover_sound is not None:
+            self.game.gameover_sound.play()
+
     def handle_event(self, event):
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_r:

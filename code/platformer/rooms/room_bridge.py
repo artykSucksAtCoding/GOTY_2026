@@ -2,9 +2,12 @@ import pygame
 from settings import *
 from sprites.platforms import Platform
 from sprites.coins import Coin
-from sprites.enemy import Enemy
+from sprites.enemy_factory import spawn_enemy
 from sprites.weapon_pickup import WeaponPickup
 from .base import Room, RoomExit
+
+ROOM_ID = "bridge"
+DIFFICULTY = ROOM_DIFFICULTY[ROOM_ID]
 
 ROOM_WIDTH = 1300
 ROOM_HEIGHT = HEIGHT
@@ -44,9 +47,9 @@ def build():
 
     # По одному патрульному врагу на каждом среднем сегменте — заставляют
     # тайминг прыжка сочетать с уклонением, а не просто бежать по прямой
-    enemies.add(Enemy(300, BRIDGE_Y - 32, 280, 460))
-    enemies.add(Enemy(560, BRIDGE_Y - 32, 540, 720))
-    enemies.add(Enemy(820, BRIDGE_Y - 32, 800, 980))
+    enemies.add(spawn_enemy(300, BRIDGE_Y - 32, 280, 460, difficulty=DIFFICULTY))
+    enemies.add(spawn_enemy(560, BRIDGE_Y - 32, 540, 720, difficulty=DIFFICULTY))
+    enemies.add(spawn_enemy(820, BRIDGE_Y - 32, 800, 980, difficulty=DIFFICULTY))
 
     # --- оружие: sword2 (2 урона), небольшой паркур — нужно допрыгнуть
     # с одного из сегментов до уединённой площадки над провалом ---

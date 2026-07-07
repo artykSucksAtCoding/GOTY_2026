@@ -1,7 +1,14 @@
 import pygame
 from settings import *
 
+
 class Enemy(pygame.sprite.Sprite):
+    """Базовый враг — патрулирует между left_bound и right_bound.
+    Сигнатура update() принимает platforms/player/projectiles, даже если сама
+    не использует их — это нужно, чтобы pygame.sprite.Group.update(...) мог
+    вызывать один и тот же набор аргументов для ЛЮБОГО типа врага в группе,
+    включая особые типы (Jumper/Shooter/Flyer), которым эти данные нужны."""
+
     def __init__(self, x, y, left_bound, right_bound):
         super().__init__()
         self.image = pygame.Surface((31, 32), pygame.SRCALPHA)
@@ -18,7 +25,7 @@ class Enemy(pygame.sprite.Sprite):
         self.max_hp = ENEMY_MAX_HP
         self.hp = self.max_hp
 
-    def update(self):
+    def update(self, platforms=None, player=None, projectiles=None):
         self.rect.x += self.speed * self.direction
         if self.rect.left <= self.left_bound:
             self.direction = 1

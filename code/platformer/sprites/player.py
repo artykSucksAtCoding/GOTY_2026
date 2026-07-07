@@ -11,8 +11,6 @@ class Player(pygame.sprite.Sprite):
         pygame.draw.rect(self.image, BLACK, (22, 12, 8, 8))
         self.rect = self.image.get_rect(topleft=(x, y))
 
-
-
         self.vel_x = 0
         self.vel_y = 0
         self.on_ground = False
@@ -29,6 +27,7 @@ class Player(pygame.sprite.Sprite):
         self.coyote_timer = 0        # сколько кадров ещё можно "прыгнуть с воздуха"
         self.jump_held_prev = False  # было ли зажато в прошлом кадре (для edge-детекта)
         self.is_jumping = False      # находимся ли в активной фазе прыжка (для jump-cut)
+        self.just_jumped = False     # True ровно в кадр, когда стартовал прыжок (для реакций врагов)
 
         # --- двойной прыжок ---
         self.air_jumps_used = 0      # сколько прыжков в воздухе уже потрачено
@@ -52,10 +51,9 @@ class Player(pygame.sprite.Sprite):
         # --- оружие ---
         self.weapon_id = "basic"  # см. WEAPON_ICON_PATHS / WEAPON_DAMAGE в settings.py
 
-
         # --- саунд эффекты ---
         self.attack_sound = pygame.mixer.Sound(ATTACK_SOUND_PATH)
-        self.dash_sound =  pygame.mixer.Sound(DASH_SOUND_PATH)
+        self.dash_sound = pygame.mixer.Sound(DASH_SOUND_PATH)
 
     def take_damage(self, amount, knockback_dir=None):
         """Наносит урон игроку, если он не в состоянии неуязвимости.
@@ -88,6 +86,7 @@ class Player(pygame.sprite.Sprite):
         self.coyote_timer = 0
         self.is_jumping = False
         self.air_jumps_used = 0
+        self.just_jumped = False
 
         self.is_dashing = False
         self.dash_timer = 0
@@ -104,6 +103,9 @@ class Player(pygame.sprite.Sprite):
 
     def update(self, platforms):
         keys = pygame.key.get_pressed()
+
+        # Сбрасываем каждый кадр — станет True только в момент старта прыжка ниже
+        self.just_jumped = False
 
         # Неуязвимость после удара тикает каждый кадр независимо от прочей логики
         if self.invuln_timer > 0:
@@ -159,11 +161,13 @@ class Player(pygame.sprite.Sprite):
                     self.coyote_timer = 0
                     self.is_jumping = True
                     self.on_ground = False
+                    self.just_jumped = True
                 elif self.air_jumps_used < MAX_AIR_JUMPS:
                     self.vel_y = AIR_JUMP_STRENGTH
                     self.air_jumps_used += 1
                     self.is_jumping = True
                     self.on_ground = False
+                    self.just_jumped = True
 
             # Контроль высоты: раннее отпускание обрезает вертикальную скорость
             if self.is_jumping and not jump_held and self.vel_y < MIN_JUMP_VELOCITY:
@@ -251,7 +255,6 @@ class Player(pygame.sprite.Sprite):
         if not self.is_attacking:
             return None
         self.attack_sound.play()
-        # pygame.mixer.music.set_volume(MUSIC_VOLUME_NORMAL)
         if self.facing_right:
             x = self.rect.right
         else:

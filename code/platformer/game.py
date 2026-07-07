@@ -41,9 +41,9 @@ class Game:
         # тогда просто используется процедурный тёмный фон
         self.backgrounds_dict = {
             "forest": pygame.image.load("images/backgrounds/forest.png").convert(),
-            "caves": pygame.image.load("images/backgrounds/caves.png").convert(),
+            #"caves": pygame.image.load("images/backgrounds/caves.png").convert(),
             "bridge": pygame.image.load("images/backgrounds/bridge.png").convert(),
-            "vault": pygame.image.load("images/backgrounds/vault.png").convert(),
+            #"vault": pygame.image.load("images/backgrounds/vault.png").convert(),
         }
 
         # --- иконки оружия для HUD: weapon_id -> Surface ---

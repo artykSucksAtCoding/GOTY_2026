@@ -129,6 +129,7 @@ class Player(pygame.sprite.Sprite):
         if (dash_pressed_now and self.dash_cooldown_timer <= 0
                 and self.dash_timer <= 0 and not self.is_dashing):
             self.dash_timer = DASH_DURATION_FRAMES
+            self.dash_sound.play()
             self.dash_cooldown_timer = DASH_COOLDOWN_FRAMES
             self.is_dashing = True
             self.dash_dir = 1 if self.facing_right else -1
@@ -136,7 +137,7 @@ class Player(pygame.sprite.Sprite):
         self.dash_held_prev = dash_held
 
         if self.is_dashing:
-            self.dash_sound.play()
+            
             # Во время рывка — фиксированная горизонтальная скорость, гравитация не действует
             self.vel_x = self.dash_dir * DASH_SPEED
             self.vel_y = 0

@@ -49,7 +49,10 @@ class Player(pygame.sprite.Sprite):
         self.attack_hit_ids = set()      # какие враги уже получили урон в текущем ударе
 
         # --- оружие ---
-        self.weapon_id = "basic"  # см. WEAPON_ICON_PATHS / WEAPON_DAMAGE в settings.py
+        # Все оружия доступны сразу — просто переключаются клавишами 1/2/3
+        # (WEAPON_SWITCH_KEYS в settings.py), подбирать/находить их не нужно.
+        self.weapon_id = "sword"          # см. WEAPON_ICON_PATHS / WEAPON_STATS в settings.py
+        self.arrow_requested = False      # True ровно в кадр выстрела из лука (game.py создаёт стрелу)
 
         # --- саунд эффекты ---
         self.attack_sound = pygame.mixer.Sound(ATTACK_SOUND_PATH)
@@ -98,7 +101,7 @@ class Player(pygame.sprite.Sprite):
         self.attack_hit_ids = set()
 
     def equip_weapon(self, weapon_id):
-        """Меняет текущее оружие игрока (подбор WeaponPickup)."""
+        """Переключает текущее оружие игрока на weapon_id (см. WEAPON_STATS в settings.py)."""
         self.weapon_id = weapon_id
 
     def update(self, platforms):
@@ -106,6 +109,8 @@ class Player(pygame.sprite.Sprite):
 
         # Сбрасываем каждый кадр — станет True только в момент старта прыжка ниже
         self.just_jumped = False
+        # Сбрасываем каждый кадр — станет True только в момент выстрела из лука ниже
+        self.arrow_requested = False
 
         # Неуязвимость после удара тикает каждый кадр независимо от прочей логики
         if self.invuln_timer > 0:
@@ -186,6 +191,17 @@ class Player(pygame.sprite.Sprite):
             if self.attack_cooldown_timer > 0:
                 self.attack_cooldown_timer -= 1
 
+            # --- переключение оружия: 1 = меч, 2 = топор, 3 = лук (все доступны сразу) ---
+            # Блокируем переключение посреди удара/замаха, чтобы не сбить уже
+            # запущенный таймер атаки текущим оружием.
+            if not self.is_attacking and not self.down_attack_active:
+                for key, weapon_id in WEAPON_SWITCH_KEYS.items():
+                    if keys[key] and weapon_id != self.weapon_id:
+                        self.weapon_id = weapon_id
+                        break
+
+            weapon_stats = WEAPON_STATS[self.weapon_id]
+
             if (attack_pressed_now and self.attack_cooldown_timer <= 0
                     and not self.is_attacking and not self.down_attack_active):
                 if down_held and not self.on_ground:
@@ -193,11 +209,18 @@ class Player(pygame.sprite.Sprite):
                     self.down_attack_active = True
                     self.vel_y = DOWN_ATTACK_FALL_SPEED
                     self.attack_cooldown_timer = ATTACK_COOLDOWN_FRAMES
+                elif self.weapon_id == "bow":
+                    # лук: не ближний хитбокс, а выстрел стрелой — саму стрелу
+                    # создаёт game.py (там есть доступ до группы снарядов игрока)
+                    self.arrow_requested = True
+                    self.attack_cooldown_timer = weapon_stats["cooldown_frames"]
+                    self.attack_sound.play()
                 else:
-                    # обычный горизонтальный удар в сторону, куда смотрит игрок
+                    # ближний удар в сторону, куда смотрит игрок — дальность и скорость
+                    # зависят от текущего оружия (меч быстрый и короткий, топор — наоборот)
                     self.is_attacking = True
-                    self.attack_timer = ATTACK_DURATION_FRAMES
-                    self.attack_cooldown_timer = ATTACK_COOLDOWN_FRAMES
+                    self.attack_timer = weapon_stats["duration_frames"]
+                    self.attack_cooldown_timer = weapon_stats["cooldown_frames"]
                     self.attack_hit_ids = set()  # новый удар — список поражённых врагов чист
 
             if self.is_attacking:
@@ -252,16 +275,31 @@ class Player(pygame.sprite.Sprite):
                         self.vel_y = 0
 
     def get_attack_rect(self):
-        """Хитбокс обычной атаки — прямоугольник сбоку от игрока, куда он смотрит."""
+        """Хитбокс обычной атаки — прямоугольник сбоку от игрока, куда он смотрит.
+        Размер зависит от текущего оружия (WEAPON_STATS): у меча — маленькая
+        дальность, у топора — большая. У лука ближнего хитбокса нет вовсе —
+        он стреляет стрелами (см. Player.arrow_requested и sprites/arrow.py)."""
         if not self.is_attacking:
             return None
         self.attack_sound.play()
+        stats = WEAPON_STATS[self.weapon_id]
+        width, height = stats["width"], stats["height"]
+        if width <= 0 or height <= 0:
+            return None
         if self.facing_right:
             x = self.rect.right
         else:
-            x = self.rect.left - ATTACK_WIDTH
-        y = self.rect.centery - ATTACK_HEIGHT // 2
-        return pygame.Rect(x, y, ATTACK_WIDTH, ATTACK_HEIGHT)
+            x = self.rect.left - width
+        y = self.rect.centery - height // 2
+        return pygame.Rect(x, y, width, height)
+
+    def get_arrow_spawn(self):
+        """Точка появления стрелы (центр игрока по высоте, чуть впереди) и
+        направление полёта — для создания Arrow в game.py."""
+        direction = 1 if self.facing_right else -1
+        x = self.rect.right if self.facing_right else self.rect.left
+        y = self.rect.centery
+        return x, y, direction
 
     def get_down_attack_rect(self):
         """Хитбокс атаки вниз — узкая полоса прямо под ногами игрока."""

@@ -3,7 +3,9 @@ import sys
 from settings import *
 
 from sprites.player import Player
+from sprites.arrow import Arrow
 from rooms import build_room, first_room_id
+from weapon_recognition import WeaponRecognizer
 import leaderboard
 
 
@@ -34,6 +36,7 @@ class Game:
         self.level_width = 0
         self.camera_x = 0
         self.projectiles = None   # снаряды стрелков — переходное боевое состояние, не часть комнаты
+        self.player_arrows = None  # стрелы, выпущенные игроком из лука — тоже не часть комнаты
         self.run_timer_frames = 0  # сколько кадров прошло с начала текущего прохождения (для лидерборда)
 
         # --- кастомные фоны комнат: room_id -> Surface ---
@@ -59,6 +62,16 @@ class Game:
             self.weapon_icons[weapon_id] = icon
 
         self.player = None
+
+        # --- распознавание оружия по рисунку (см. weapon_recognition.py) ---
+        self.weapon_recognizer = WeaponRecognizer()
+        self.drawing_mode = False                # True, пока зажата DRAW_WEAPON_KEY
+        self.draw_canvas = pygame.Surface((DRAW_CANVAS_SIZE, DRAW_CANVAS_SIZE))
+        self.draw_canvas.fill(WHITE)
+        self.draw_last_pos = None                 # предыдущая точка мыши для рисования линии
+        self.draw_slowmo_counter = 0              # счётчик кадров для эффекта замедления
+        self.draw_result_text = ""                # что показать после распознавания ("Топор!" и т.п.)
+        self.draw_result_timer = 0
 
         # --- настройки: графика ---
         self.theme_index = 0          # индекс в BG_THEMES
@@ -134,6 +147,50 @@ class Game:
         except pygame.error:
             pass
 
+    # --- рисование оружия (DRAW_WEAPON_KEY, см. weapon_recognition.py) ---
+    def start_weapon_drawing(self):
+        """Открывает холст — вызывается по нажатию DRAW_WEAPON_KEY."""
+        self.drawing_mode = True
+        self.draw_canvas.fill(WHITE)
+        self.draw_last_pos = None
+        self.draw_slowmo_counter = 0
+        self.draw_result_text = ""
+        self.draw_result_timer = 0
+
+    def weapon_draw_line(self, screen_from, screen_to):
+        """Рисует отрезок на холсте по координатам мыши в системе экрана —
+        сама переводит их в локальные координаты холста и обрезает по его границам."""
+        canvas_rect = self.get_draw_canvas_rect()
+        local_from = (screen_from[0] - canvas_rect.left, screen_from[1] - canvas_rect.top)
+        local_to = (screen_to[0] - canvas_rect.left, screen_to[1] - canvas_rect.top)
+        pygame.draw.line(self.draw_canvas, BLACK, local_from, local_to, DRAW_BRUSH_SIZE)
+        pygame.draw.circle(self.draw_canvas, BLACK, local_to, DRAW_BRUSH_SIZE // 2)
+
+    def get_draw_canvas_rect(self):
+        """Прямоугольник холста по центру экрана — общий для рисования и отрисовки."""
+        return pygame.Rect(
+            (WIDTH - DRAW_CANVAS_SIZE) // 2, (HEIGHT - DRAW_CANVAS_SIZE) // 2,
+            DRAW_CANVAS_SIZE, DRAW_CANVAS_SIZE,
+        )
+
+    def finish_weapon_drawing(self):
+        """Закрывает холст — вызывается по отпусканию DRAW_WEAPON_KEY.
+        Прогоняет нарисованное через модель и, если распознавание удалось,
+        переключает оружие игрока."""
+        self.drawing_mode = False
+        self.draw_last_pos = None
+
+        weapon_id = self.weapon_recognizer.predict(self.draw_canvas)
+        if weapon_id is not None and self.player is not None:
+            self.player.equip_weapon(weapon_id)
+            names = {"sword": "Меч!", "axe": "Топор!", "bow": "Лук!"}
+            self.draw_result_text = names.get(weapon_id, weapon_id)
+        elif not self.weapon_recognizer.available:
+            self.draw_result_text = "Модель распознавания недоступна"
+        else:
+            self.draw_result_text = "Не удалось распознать оружие"
+        self.draw_result_timer = DRAW_RESULT_MESSAGE_FRAMES
+
     def change_state(self, new_state):
         """Запрашивает смену состояния — произойдёт в начале следующего кадра."""
         self.next_state = new_state
@@ -163,6 +220,7 @@ class Game:
         # снаряды — не часть статических данных комнаты, а переходное боевое состояние;
         # при входе в любую комнату (в т.ч. повторном) начинаем с чистого листа
         self.projectiles = pygame.sprite.Group()
+        self.player_arrows = pygame.sprite.Group()
 
         spawn_x, spawn_y = self.room.get_spawn(entry_side)
 
@@ -383,8 +441,9 @@ class SettingsState(State):
 class LeaderboardState(State):
     """Отдельная вкладка со статистикой прохождений. Загружает записи из
     leaderboard.json один раз при входе (не каждый кадр — файл не меняется,
-    пока сам игрок не пройдёт уровень заново). ←/→ переключает фильтр
-    сортировки, ESC/M — назад в меню."""
+    пока сам игрок не пройдёт уровень заново, либо не удалит запись отсюда же).
+    ←/→ переключает фильтр сортировки, ↑/↓ выбирает строку, DELETE/X удаляет
+    выбранного старого лидера, ESC/M — назад в меню."""
 
     FILTERS = ["coins", "time"]
     FILTER_LABELS = {"coins": "По монетам", "time": "По скорости (быстрее — выше)"}
@@ -394,6 +453,7 @@ class LeaderboardState(State):
         self.time = 0
         self.filter_index = 0
         self.records = leaderboard.load_leaderboard()
+        self.selected_index = 0
 
     @property
     def current_filter(self):
@@ -409,11 +469,25 @@ class LeaderboardState(State):
         if event.type != pygame.KEYDOWN:
             return
 
+        rows = self._sorted_records()[:LEADERBOARD_DISPLAY_COUNT]
+
         if event.key in (pygame.K_ESCAPE, pygame.K_m):
             self.game.change_state(MenuState(self.game))
         elif event.key in (pygame.K_LEFT, pygame.K_a, pygame.K_RIGHT, pygame.K_d):
             direction = -1 if event.key in (pygame.K_LEFT, pygame.K_a) else 1
             self.filter_index = (self.filter_index + direction) % len(self.FILTERS)
+            self.selected_index = 0
+        elif event.key in (pygame.K_UP, pygame.K_w) and rows:
+            self.selected_index = (self.selected_index - 1) % len(rows)
+        elif event.key in (pygame.K_DOWN, pygame.K_s) and rows:
+            self.selected_index = (self.selected_index + 1) % len(rows)
+        elif event.key in (pygame.K_DELETE, pygame.K_x) and rows:
+            # Удаляем именно тот результат (старого лидера), что сейчас выделен,
+            # а не по индексу в другом порядке сортировки
+            record_to_remove = rows[self.selected_index]
+            leaderboard.remove_result(self.records, record_to_remove)
+            self.records = leaderboard.load_leaderboard()
+            self.selected_index = max(0, min(self.selected_index, len(self.records) - 1))
 
     def update(self):
         self.time += 1
@@ -422,57 +496,69 @@ class LeaderboardState(State):
         g = self.game
         draw_dark_background(screen, self.time, g.theme, g.spore_count)
 
-        draw_text_centered(screen, "ЛИДЕРБОРД", g.big_font, g.theme["accent"], 60)
+        draw_text_centered(screen, "ЛИДЕРБОРД", g.big_font, g.theme["accent"], 45)
         draw_text_centered(screen, f"Фильтр: < {self.FILTER_LABELS[self.current_filter]} >",
-                            g.font, WHITE, 105)
+                            g.font, WHITE, 85)
 
         rows = self._sorted_records()[:LEADERBOARD_DISPLAY_COUNT]
+        self.selected_index = max(0, min(self.selected_index, len(rows) - 1)) if rows else 0
 
         if not rows:
             draw_text_centered(screen, "Пока нет результатов — пройди игру до конца!",
                                 g.font, GRAY, HEIGHT // 2)
         else:
-            self._draw_bar_chart(screen, rows)
+            self._draw_rows(screen, rows)
 
-        draw_text_centered(screen, "←/→ — сменить фильтр, ESC/M — назад в меню",
-                            g.small_font, GRAY, HEIGHT - 30)
+        draw_text_centered(
+            screen,
+            "←/→ — фильтр  •  ↑/↓ — выбрать  •  DEL/X — удалить  •  ESC/M — в меню",
+            g.small_font, GRAY, HEIGHT - 24,
+        )
 
-    def _draw_bar_chart(self, screen, rows):
-        """Горизонтальные бары — длина пропорциональна значению по текущему фильтру.
-        Для монет — само число монет. Для скорости — обратная величина от времени
-        (чем быстрее прошёл, тем длиннее бар), чтобы "лучше" визуально значило "больше"."""
+    def _draw_rows(self, screen, rows):
+        """Список результатов в две строки на каждую запись — так помещается вся
+        информация (ник, монеты, время, дата) без обрезания за край экрана."""
         g = self.game
 
         if self.current_filter == "coins":
             values = [r["coins"] for r in rows]
         else:
             values = [1.0 / max(r["time"], 0.01) for r in rows]
-
         max_value = max(values) if max(values) > 0 else 1
 
-        chart_x = 90
-        chart_max_width = WIDTH - chart_x - 260
-        bar_height = 24
-        gap = 12
-        start_y = 145
+        chart_x = 56
+        chart_max_width = 220
+        row_height = 46
+        start_y = 118
 
         for i, (record, value) in enumerate(zip(rows, values)):
-            y = start_y + i * (bar_height + gap)
-            bar_width = max(4, int(chart_max_width * (value / max_value)))
+            y = start_y + i * row_height
+            is_selected = (i == self.selected_index)
+
+            if is_selected:
+                highlight_rect = pygame.Rect(16, y - 4, WIDTH - 32, row_height - 6)
+                pygame.draw.rect(screen, (*g.theme["accent"], 40), highlight_rect, border_radius=6)
+                pygame.draw.rect(screen, g.theme["accent"], highlight_rect, 2, border_radius=6)
 
             # ранг слева
             rank_text = g.small_font.render(f"{i + 1}.", True, WHITE)
-            screen.blit(rank_text, (chart_x - 70, y + 2))
+            screen.blit(rank_text, (chart_x - 40, y))
 
-            # сам бар
-            bar_rect = pygame.Rect(chart_x, y, bar_width, bar_height)
+            # бар — короткий, просто индикатор относительно других строк
+            bar_width = max(4, int(chart_max_width * (value / max_value)))
+            bar_rect = pygame.Rect(chart_x, y + 2, bar_width, 14)
             pygame.draw.rect(screen, g.theme["accent"], bar_rect, border_radius=4)
-            pygame.draw.rect(screen, g.theme["mask_outline"], bar_rect, 2, border_radius=4)
+            pygame.draw.rect(screen, g.theme["mask_outline"], bar_rect, 1, border_radius=4)
 
-            # подпись справа от бара: монеты + время + дата
-            label = f"{record['coins']} монет  •  {format_time(record['time'])}  •  {record['date']}"
-            label_surf = g.small_font.render(label, True, WHITE)
-            screen.blit(label_surf, (chart_x + chart_max_width + 12, y + 3))
+            # строка 1: ник (жирным по смыслу — крупным шрифтом)
+            name = record.get("name", LEADERBOARD_DEFAULT_NAME)
+            name_surf = g.font.render(name, True, WHITE if not is_selected else g.theme["accent"])
+            screen.blit(name_surf, (chart_x + chart_max_width + 16, y - 6))
+
+            # строка 2: монеты + время + дата — мелким шрифтом, под ником
+            details = f"{record['coins']} монет  •  {format_time(record['time'])}  •  {record['date']}"
+            details_surf = g.small_font.render(details, True, GRAY)
+            screen.blit(details_surf, (chart_x, y + 20))
 
 
 # ===========================================================
@@ -480,11 +566,49 @@ class LeaderboardState(State):
 # ===========================================================
 class PlayingState(State):
     def handle_event(self, event):
+        g = self.game
         if event.type == pygame.KEYDOWN:
-            if event.key in (pygame.K_ESCAPE, pygame.K_p):
+            if event.key in (pygame.K_ESCAPE, pygame.K_p) and not g.drawing_mode:
+                # Паузу нельзя открыть посреди рисования — иначе холст
+                # останется "подвешен", а KEYUP DRAW_WEAPON_KEY придёт уже
+                # в PausedState и не закроет его как надо.
                 self.game.change_state(PausedState(self.game))
+            elif event.key == DRAW_WEAPON_KEY and not g.drawing_mode:
+                g.start_weapon_drawing()
+        elif event.type == pygame.KEYUP:
+            if event.key == DRAW_WEAPON_KEY and g.drawing_mode:
+                g.finish_weapon_drawing()
+        elif event.type == pygame.MOUSEMOTION and g.drawing_mode:
+            # event.buttons[0] — зажата ли левая кнопка мыши прямо во время движения
+            if event.buttons[0]:
+                start = g.draw_last_pos if g.draw_last_pos is not None else event.pos
+                g.weapon_draw_line(start, event.pos)
+            g.draw_last_pos = event.pos
+        elif event.type == pygame.MOUSEBUTTONDOWN and g.drawing_mode and event.button == 1:
+            g.draw_last_pos = event.pos
+            g.weapon_draw_line(event.pos, event.pos)
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            g.draw_last_pos = None
 
     def update(self):
+        g = self.game
+
+        # --- надпись с результатом распознавания угасает сама по себе ---
+        if g.draw_result_timer > 0:
+            g.draw_result_timer -= 1
+
+        if g.drawing_mode:
+            # Пока открыт холст, игровой процесс не стоит на месте совсем,
+            # а сильно замедляется — обычная логика тикает лишь раз в
+            # DRAW_SLOWMO_DIVISOR кадров, остальное время экран просто "подвисает"
+            # под затемнением, пока игрок рисует.
+            g.draw_slowmo_counter += 1
+            if g.draw_slowmo_counter % DRAW_SLOWMO_DIVISOR != 0:
+                return
+
+        self._tick_gameplay()
+
+    def _tick_gameplay(self):
         g = self.game
         g.run_timer_frames += 1
         g.player.update(g.platforms)
@@ -495,16 +619,24 @@ class PlayingState(State):
         g.coins.update()
         g.weapons.update()
         g.projectiles.update()
+        g.player_arrows.update()
+
+        # --- выстрел из лука: Player лишь просит выстрелить (arrow_requested),
+        # саму стрелу создаём здесь, где есть доступ к группе снарядов игрока ---
+        if g.player.arrow_requested:
+            x, y, direction = g.player.get_arrow_spawn()
+            arrow_damage = WEAPON_STATS["bow"]["damage"]
+            g.player_arrows.add(Arrow(x, y, direction, arrow_damage))
 
         collected = pygame.sprite.spritecollide(g.player, g.coins, dokill=True)
         g.score += len(collected)
 
-        # --- подбор оружия ---
+        # --- подбор оружия (на случай, если в комнатах ещё лежат предметы) ---
         picked_weapons = pygame.sprite.spritecollide(g.player, g.weapons, dokill=True)
         for weapon in picked_weapons:
             g.player.equip_weapon(weapon.weapon_id)
 
-        current_damage = WEAPON_DAMAGE[g.player.weapon_id]
+        current_damage = WEAPON_STATS[g.player.weapon_id]["damage"]
 
         # --- атаки наносят врагам урон текущим оружием (раньше, чем сработает
         # урон от простого касания) ---
@@ -516,6 +648,13 @@ class PlayingState(State):
                 if attack_rect.colliderect(enemy.rect) and id(enemy) not in g.player.attack_hit_ids:
                     g.player.attack_hit_ids.add(id(enemy))
                     enemy.take_damage(current_damage)
+
+        # --- стрелы лука наносят урон первому врагу, в которого попадут ---
+        for arrow in list(g.player_arrows):
+            hit_enemy = pygame.sprite.spritecollideany(arrow, g.enemies)
+            if hit_enemy is not None:
+                hit_enemy.take_damage(arrow.damage)
+                arrow.kill()
 
         down_attack_rect = g.player.get_down_attack_rect()
         if down_attack_rect is not None:
@@ -568,6 +707,8 @@ class PlayingState(State):
 
     def draw(self, screen):
         draw_world(self.game, screen)
+        if self.game.drawing_mode or self.game.draw_result_timer > 0:
+            draw_weapon_canvas_overlay(self.game, screen)
 
 
 # ===========================================================
@@ -647,21 +788,52 @@ class PausedState(State):
 class WonState(State):
     def __init__(self, game):
         super().__init__(game)
-        # Победа — сохраняем результат в лидерборд один раз, сразу при входе в это состояние
+        # Победа — решаем сразу, попадает ли результат в лидерборд. Если да —
+        # сначала просим ввести ник и только потом сохраняем результат.
         self.elapsed_seconds = game.run_timer_frames / FPS
-        leaderboard.add_result(game.score, self.elapsed_seconds)
+        self.qualifies = leaderboard.will_qualify(game.score)
+        self.entering_name = self.qualifies
+        self.name_input = ""
+        self.cursor_timer = 0
+
+        if not self.qualifies:
+            # Результат всё равно сохраняется, просто без ника (не попал в топ) —
+            # чтобы статистика прохождений не терялась
+            leaderboard.add_result(game.score, self.elapsed_seconds)
+
+    def _confirm_name(self):
+        leaderboard.add_result(self.game.score, self.elapsed_seconds, self.name_input)
+        self.entering_name = False
 
     def handle_event(self, event):
-        if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_r:
-                self.game.new_level()
-                self.game.change_state(PlayingState(self.game))
-            elif event.key == pygame.K_m:
-                self.game.change_state(MenuState(self.game))
-            elif event.key == pygame.K_l:
-                self.game.change_state(LeaderboardState(self.game))
+        if event.type != pygame.KEYDOWN:
+            return
+
+        if self.entering_name:
+            if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                self._confirm_name()
             elif event.key == pygame.K_ESCAPE:
-                self.game.running = False
+                # Отмена ввода ника — результат всё равно сохраняется, но с именем по умолчанию
+                self.name_input = ""
+                self._confirm_name()
+            elif event.key == pygame.K_BACKSPACE:
+                self.name_input = self.name_input[:-1]
+            elif event.unicode and event.unicode.isprintable() and len(self.name_input) < LEADERBOARD_NAME_MAX_LEN:
+                self.name_input += event.unicode
+            return
+
+        if event.key == pygame.K_r:
+            self.game.new_level()
+            self.game.change_state(PlayingState(self.game))
+        elif event.key == pygame.K_m:
+            self.game.change_state(MenuState(self.game))
+        elif event.key == pygame.K_l:
+            self.game.change_state(LeaderboardState(self.game))
+        elif event.key == pygame.K_ESCAPE:
+            self.game.running = False
+
+    def update(self):
+        self.cursor_timer += 1
 
     def draw(self, screen):
         g = self.game
@@ -670,7 +842,17 @@ class WonState(State):
         draw_text_centered(screen, "Победа! Уровень пройден!", g.big_font, YELLOW, HEIGHT // 2 - 30)
         draw_text_centered(screen, f"Собрано монет: {g.score}  •  Время: {format_time(self.elapsed_seconds)}",
                             g.font, WHITE, HEIGHT // 2 + 20)
-        draw_text_centered(screen, "R — рестарт  •  M — меню  •  L — лидерборд", g.font, WHITE, HEIGHT // 2 + 60)
+
+        if self.entering_name:
+            draw_text_centered(screen, "Новый результат в лидерборде! Впиши свой ник:",
+                                g.font, g.theme["accent"], HEIGHT // 2 + 60)
+            cursor = "_" if (self.cursor_timer // 20) % 2 == 0 else " "
+            name_text = f"{self.name_input}{cursor}"
+            draw_text_centered(screen, name_text, g.big_font, WHITE, HEIGHT // 2 + 100)
+            draw_text_centered(screen, "ENTER — подтвердить  •  ESC — пропустить",
+                                g.small_font, GRAY, HEIGHT // 2 + 150)
+        else:
+            draw_text_centered(screen, "R — рестарт  •  M — меню  •  L — лидерборд", g.font, WHITE, HEIGHT // 2 + 60)
 
 
 # ===========================================================
@@ -775,11 +957,8 @@ def draw_hp_bar(screen, player, theme):
 
 
 def draw_weapon_icon(screen, game):
-    """Иконка текущего оружия — сразу справа от полосок здоровья."""
-    icon = game.weapon_icons.get(game.player.weapon_id)
-    if icon is None:
-        return
-
+    """Панель всех трёх оружий (все доступны сразу) справа от полосок здоровья —
+    текущее выделено рамкой, рядом номер клавиши для быстрого переключения (1/2/3)."""
     mask_size = 22
     gap = 8
     x0, y0 = 20, 50
@@ -787,7 +966,18 @@ def draw_weapon_icon(screen, game):
 
     x = x0 + hp_row_width + 12
     y = y0 - 3
-    screen.blit(icon, (x, y))
+
+    for i, weapon_id in enumerate(WEAPON_ORDER):
+        icon = game.weapon_icons.get(weapon_id)
+        if icon is None:
+            continue
+        slot_x = x + i * (WEAPON_ICON_HUD_SIZE + 6)
+        slot_rect = pygame.Rect(slot_x - 2, y - 2, WEAPON_ICON_HUD_SIZE + 4, WEAPON_ICON_HUD_SIZE + 4)
+        if weapon_id == game.player.weapon_id:
+            pygame.draw.rect(screen, game.theme["accent"], slot_rect, border_radius=4)
+        screen.blit(icon, (slot_x, y))
+        number_text = game.small_font.render(str(i + 1), True, WHITE)
+        screen.blit(number_text, (slot_x, y + WEAPON_ICON_HUD_SIZE + 2))
 
 
 def draw_world(game: Game, screen):
@@ -813,6 +1003,9 @@ def draw_world(game: Game, screen):
 
     for projectile in game.projectiles:
         screen.blit(projectile.image, projectile.rect.move(-cam, 0))
+
+    for arrow in game.player_arrows:
+        screen.blit(arrow.image, arrow.rect.move(-cam, 0))
 
     if game.flag is not None:
         screen.blit(game.flag.image, game.flag.rect.move(-cam, 0))
@@ -866,3 +1059,25 @@ def draw_world(game: Game, screen):
 
     timer_text = game.font.render(format_time(game.run_timer_frames / FPS), True, WHITE)
     screen.blit(timer_text, (WIDTH - timer_text.get_width() - 16, 12))
+
+
+def draw_weapon_canvas_overlay(game, screen):
+    """Затемнение поверх игры + белый холст, на котором игрок рисует оружие
+    мышью, пока зажата DRAW_WEAPON_KEY. После отпускания клавиши холст ещё
+    ненадолго остаётся на экране, показывая результат распознавания."""
+    overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, DRAW_OVERLAY_ALPHA))
+    screen.blit(overlay, (0, 0))
+
+    canvas_rect = game.get_draw_canvas_rect()
+    screen.blit(game.draw_canvas, canvas_rect)
+    pygame.draw.rect(screen, game.theme["accent"], canvas_rect, 3)
+
+    if game.drawing_mode:
+        hint_text = game.small_font.render(
+            "Рисуй оружие мышью — отпусти R, чтобы распознать", True, WHITE
+        )
+    else:
+        hint_text = game.font.render(game.draw_result_text, True, game.theme["accent"])
+    hint_rect = hint_text.get_rect(center=(WIDTH // 2, canvas_rect.top - 24))
+    screen.blit(hint_text, hint_rect)

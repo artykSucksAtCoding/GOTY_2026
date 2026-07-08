@@ -4,7 +4,6 @@ from sprites.platforms import Platform
 from sprites.coins import Coin
 from sprites.enemy import Enemy
 from sprites.flag import Flag
-from sprites.weapon_pickup import WeaponPickup
 from .base import Room, RoomExit
 
 ROOM_WIDTH = 1200
@@ -46,9 +45,9 @@ def build():
 
     flag = Flag(1100, HEIGHT - 320 - 70)
 
-    # --- оружие: sword3 (3 урона) — самый сильный клинок, спрятан выше всего в комнате ---
+    # уединённая площадка высоко в комнате остаётся бонусным паркуром за монетами —
+    # все оружия у игрока уже доступны с начала игры
     weapons = pygame.sprite.Group()
-    weapons.add(WeaponPickup(497, 90 - WEAPON_PICKUP_SIZE, "sword3"))
 
     # Только дверь назад — это последняя комната цепочки, дальше идти некуда
     exits = [

@@ -2,7 +2,12 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from settings import LEADERBOARD_FILE_NAME, LEADERBOARD_MAX_STORED
+from settings import (
+    LEADERBOARD_FILE_NAME,
+    LEADERBOARD_MAX_STORED,
+    LEADERBOARD_NAME_MAX_LEN,
+    LEADERBOARD_DEFAULT_NAME,
+)
 
 # Путь считается от расположения ЭТОГО файла, а не от текущей рабочей директории —
 # так игра сохраняет результаты в одно и то же место независимо от того,
@@ -34,12 +39,31 @@ def save_leaderboard(records):
         pass
 
 
-def add_result(coins, time_seconds):
+def will_qualify(coins):
+    """Проверяет, попадёт ли результат с таким числом монет в сохранённый
+    лидерборд (до фактического сохранения) — используется, чтобы решить,
+    стоит ли предлагать игроку вписать ник после победы. Правило то же самое,
+    что и обрезка списка в add_result: пока хранится меньше LEADERBOARD_MAX_STORED
+    записей — попадает любой результат, иначе нужно обойти худший из сохранённых."""
+    records = load_leaderboard()
+    if len(records) < LEADERBOARD_MAX_STORED:
+        return True
+    worst_coins = min(r["coins"] for r in records)
+    return coins >= worst_coins
+
+
+def add_result(coins, time_seconds, name=None):
     """Добавляет новый результат прохождения и сохраняет обновлённый список.
     Хранится не больше LEADERBOARD_MAX_STORED лучших результатов (по монетам),
-    чтобы файл не рос бесконечно при частых перепрохождениях."""
+    чтобы файл не рос бесконечно при частых перепрохождениях.
+    name — ник, который игрок ввёл на экране победы; если пустой/не передан,
+    используется LEADERBOARD_DEFAULT_NAME."""
     records = load_leaderboard()
+
+    clean_name = (name or "").strip()[:LEADERBOARD_NAME_MAX_LEN] or LEADERBOARD_DEFAULT_NAME
+
     records.append({
+        "name": clean_name,
         "coins": int(coins),
         "time": float(time_seconds),
         "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -50,5 +74,15 @@ def add_result(coins, time_seconds):
     records.sort(key=lambda r: r["coins"], reverse=True)
     records = records[:LEADERBOARD_MAX_STORED]
 
+    save_leaderboard(records)
+    return records
+
+
+def remove_result(records, record):
+    """Удаляет конкретную запись (старого лидера) из списка и сохраняет файл.
+    records должен быть тем же списком объектов, что вернул load_leaderboard()/
+    add_result() — record ищется и удаляется по идентичности элемента."""
+    if record in records:
+        records.remove(record)
     save_leaderboard(records)
     return records

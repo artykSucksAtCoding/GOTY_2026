@@ -3,7 +3,6 @@ from settings import *
 from sprites.platforms import Platform
 from sprites.coins import Coin
 from sprites.enemy_factory import spawn_enemy
-from sprites.weapon_pickup import WeaponPickup
 from .base import Room, RoomExit
 
 ROOM_ID = "bridge"
@@ -51,10 +50,9 @@ def build():
     enemies.add(spawn_enemy(560, BRIDGE_Y - 32, 540, 720, difficulty=DIFFICULTY))
     enemies.add(spawn_enemy(820, BRIDGE_Y - 32, 800, 980, difficulty=DIFFICULTY))
 
-    # --- оружие: sword2 (2 урона), небольшой паркур — нужно допрыгнуть
-    # с одного из сегментов до уединённой площадки над провалом ---
+    # уединённая площадка над провалом (605, BRIDGE_Y - 150) остаётся просто
+    # бонусным паркуром за монетами — все оружия у игрока уже доступны с начала игры
     weapons = pygame.sprite.Group()
-    weapons.add(WeaponPickup(615, BRIDGE_Y - 150 - WEAPON_PICKUP_SIZE, "sword2"))
 
     exits = [
         RoomExit(

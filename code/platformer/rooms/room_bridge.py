@@ -2,7 +2,7 @@ import pygame
 from settings import *
 from sprites.platforms import Platform
 from sprites.coins import Coin
-from sprites.enemy_factory import spawn_enemy
+from sprites.enemy_factory import spawn_enemy_group
 from .base import Room, RoomExit
 
 ROOM_ID = "bridge"
@@ -16,7 +16,7 @@ ROOM_HEIGHT = HEIGHT
 BRIDGE_Y = HEIGHT - 40
 
 
-def build():
+def build(game_difficulty="normal"):
     platforms = pygame.sprite.Group()
     coins = pygame.sprite.Group()
     enemies = pygame.sprite.Group()
@@ -46,9 +46,12 @@ def build():
 
     # По одному патрульному врагу на каждом среднем сегменте — заставляют
     # тайминг прыжка сочетать с уклонением, а не просто бежать по прямой
-    enemies.add(spawn_enemy(300, BRIDGE_Y - 32, 280, 460, difficulty=DIFFICULTY))
-    enemies.add(spawn_enemy(560, BRIDGE_Y - 32, 540, 720, difficulty=DIFFICULTY))
-    enemies.add(spawn_enemy(820, BRIDGE_Y - 32, 800, 980, difficulty=DIFFICULTY))
+    enemy_positions = [
+        (300, BRIDGE_Y - 32, 280, 460),
+        (560, BRIDGE_Y - 32, 540, 720),
+        (820, BRIDGE_Y - 32, 800, 980),
+    ]
+    enemies.add(spawn_enemy_group(enemy_positions, DIFFICULTY, game_difficulty))
 
     # уединённая площадка над провалом (605, BRIDGE_Y - 150) остаётся просто
     # бонусным паркуром за монетами — все оружия у игрока уже доступны с начала игры

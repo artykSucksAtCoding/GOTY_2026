@@ -1,9 +1,11 @@
 import pygame
 import sys
+from collections import deque
 from settings import *
 
 from sprites.player import Player
 from sprites.arrow import Arrow
+from sprites.boss import BossEnemy
 from rooms import build_room, first_room_id
 from weapon_recognition import WeaponRecognizer
 import leaderboard
@@ -14,7 +16,7 @@ class Game:
         pygame.init()
 
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
-        pygame.display.set_caption("МЕГА-ПЛАТФОРМЕР")
+        pygame.display.set_caption("Draw and attack!")
         self.clock = pygame.time.Clock()
 
         self.font = pygame.font.SysFont("Arial", 28, bold=True)
@@ -38,6 +40,10 @@ class Game:
         self.projectiles = None   # снаряды стрелков — переходное боевое состояние, не часть комнаты
         self.player_arrows = None  # стрелы, выпущенные игроком из лука — тоже не часть комнаты
         self.run_timer_frames = 0  # сколько кадров прошло с начала текущего прохождения (для лидерборда)
+        self.boss = None          # BossEnemy текущей комнаты, если это BOSS_ROOM_ID (для хелсбара/победы)
+
+        # --- секретная комбинация клавиш для мгновенной телепортации к боссу (тесты) ---
+        self._secret_key_buffer = deque(maxlen=len(SECRET_BOSS_KEY_SEQUENCE))
 
         # --- кастомные фоны комнат: room_id -> Surface ---
         # .get() при отрисовке подстрахует комнаты, для которых картинки ещё нет —
@@ -47,6 +53,10 @@ class Game:
             #"caves": pygame.image.load("images/backgrounds/caves.png").convert(),
             "bridge": pygame.image.load("images/backgrounds/bridge.png").convert(),
             #"vault": pygame.image.load("images/backgrounds/vault.png").convert(),
+            #"meadow": pygame.image.load("images/backgrounds/meadow.png").convert(),
+            #"orchard": pygame.image.load("images/backgrounds/orchard.png").convert(),
+            #"sky": pygame.image.load("images/backgrounds/sky.png").convert(),
+            #"summit": pygame.image.load("images/backgrounds/summit.png").convert(),
         }
 
         # --- иконки оружия для HUD: weapon_id -> Surface ---
@@ -62,6 +72,11 @@ class Game:
             self.weapon_icons[weapon_id] = icon
 
         self.player = None
+
+        # --- уровень сложности (выбирается в меню перед первым стартом, см.
+        # DifficultySelectState) — сохраняется между рестартами (R), пока игрок
+        # не вернётся в главное меню и не выберет заново ---
+        self.difficulty = "normal"
 
         # --- распознавание оружия по рисунку (см. weapon_recognition.py) ---
         self.weapon_recognizer = WeaponRecognizer()
@@ -125,8 +140,17 @@ class Game:
             self.player.dash_sound.set_volume(self.master_sfx_volume)
 
     def apply_fullscreen(self):
-        """Переключает окно между обычным и полноэкранным режимом."""
-        flags = pygame.FULLSCREEN if self.fullscreen else 0
+        """Переключает окно между обычным и полноэкранным режимом.
+        В полноэкранном режиме используем флаг SCALED — иначе SDL пытается
+        сменить реальное разрешение экрана на фиксированные WIDTH x HEIGHT,
+        из-за чего изображение на мониторах с другим разрешением выходит
+        растянутым/съехавшим. SCALED вместо этого рендерит в неизменном
+        логическом разрешении и аккуратно масштабирует картинку под
+        реальный экран, сохраняя пропорции (с чёрными полосами по краям)."""
+        if self.fullscreen:
+            flags = pygame.FULLSCREEN | pygame.SCALED
+        else:
+            flags = 0
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
 
     def start_music(self):
@@ -180,11 +204,12 @@ class Game:
         self.drawing_mode = False
         self.draw_last_pos = None
 
-        weapon_id = self.weapon_recognizer.predict(self.draw_canvas)
+        weapon_id, confidence = self.weapon_recognizer.predict(self.draw_canvas)
         if weapon_id is not None and self.player is not None:
-            self.player.equip_weapon(weapon_id)
+            self.player.equip_weapon(weapon_id, confidence)
             names = {"sword": "Меч!", "axe": "Топор!", "bow": "Лук!"}
-            self.draw_result_text = names.get(weapon_id, weapon_id)
+            weapon_name = names.get(weapon_id, weapon_id)
+            self.draw_result_text = f"{weapon_name} ({confidence * 100:.0f}%)"
         elif not self.weapon_recognizer.available:
             self.draw_result_text = "Модель распознавания недоступна"
         else:
@@ -194,6 +219,24 @@ class Game:
     def change_state(self, new_state):
         """Запрашивает смену состояния — произойдёт в начале следующего кадра."""
         self.next_state = new_state
+
+    def check_secret_boss_sequence(self, key):
+        """Копит последние нажатые клавиши и сравнивает с SECRET_BOSS_KEY_SEQUENCE
+        (набрать подряд B-O-S-S) — секретная комбинация для мгновенной
+        телепортации в комнату босса, чтобы не проходить всю игру заново
+        при каждом тесте боя."""
+        self._secret_key_buffer.append(key)
+        if list(self._secret_key_buffer) == SECRET_BOSS_KEY_SEQUENCE:
+            self.teleport_to_boss()
+
+    def teleport_to_boss(self):
+        """Мгновенно переносит игрока в комнату босса — создаёт нового игрока
+        (если игра ещё не начиналась, например вызвано из главного меню) и
+        переключает состояние на PlayingState."""
+        if self.player is None:
+            self.new_level()
+        self.load_room(BOSS_ROOM_ID, "default")
+        self.change_state(PlayingState(self))
 
     def new_level(self):
         """Полный рестарт: новый игрок (свежий HP/счёт/оружие), первая комната,
@@ -208,7 +251,7 @@ class Game:
         """Загружает комнату по id и ставит игрока в точку появления,
         соответствующую стороне, с которой он вошёл (entry_side)."""
         self.room_id = room_id
-        self.room = build_room(room_id)
+        self.room = build_room(room_id, self.difficulty)
 
         self.platforms = self.room.platforms
         self.coins = self.room.coins
@@ -216,6 +259,10 @@ class Game:
         self.weapons = self.room.weapons
         self.flag = self.room.flag
         self.level_width = self.room.width
+
+        # Ищем босса среди врагов комнаты (обычно есть только в BOSS_ROOM_ID) —
+        # нужна отдельная ссылка для всегда видимого хелсбара и проверки победы
+        self.boss = next((e for e in self.enemies if isinstance(e, BossEnemy)), None)
 
         # снаряды — не часть статических данных комнаты, а переходное боевое состояние;
         # при входе в любую комнату (в т.ч. повторном) начинаем с чистого листа
@@ -246,6 +293,8 @@ class Game:
             for event in events:
                 if event.type == pygame.QUIT:
                     self.running = False
+                elif event.type == pygame.KEYDOWN:
+                    self.check_secret_boss_sequence(event.key)
                 self.state.handle_event(event)
 
             self.state.update()
@@ -294,8 +343,7 @@ class MenuState(State):
     def handle_event(self, event):
         if event.type == pygame.KEYDOWN:
             if event.key in (pygame.K_SPACE, pygame.K_RETURN):
-                self.game.new_level()
-                self.game.change_state(PlayingState(self.game))
+                self.game.change_state(DifficultySelectState(self.game))
             elif event.key == pygame.K_o:
                 self.game.change_state(SettingsState(self.game))
             elif event.key == pygame.K_l:
@@ -310,8 +358,8 @@ class MenuState(State):
         g = self.game
         draw_dark_background(screen, self.time, g.theme, g.spore_count)
 
-        draw_text_centered(screen, "МЕГА-ПЛАТФОРМЕР", g.title_font, g.theme["accent"], HEIGHT // 2 - 100)
-        draw_text_centered(screen, "Нажми ПРОБЕЛ или ENTER, чтобы начать", g.font, WHITE, HEIGHT // 2 + 10)
+        draw_text_centered(screen, "Draw and attack!", g.title_font, g.theme["accent"], HEIGHT // 2 - 100)
+        draw_text_centered(screen, "Нажми ПРОБЕЛ или ENTER, чтобы выбрать сложность и начать", g.font, WHITE, HEIGHT // 2 + 10)
         draw_text_centered(screen, "Управление: A/D или стрелки — движение, SPACE/W — прыжок",
                             g.small_font, GRAY, HEIGHT // 2 + 60)
         draw_text_centered(screen, "Двойной прыжок в воздухе, SHIFT — рывок (дэш)",
@@ -324,6 +372,65 @@ class MenuState(State):
                             g.small_font, GRAY, HEIGHT // 2 + 154)
         draw_text_centered(screen, "L — лидерборд",
                             g.small_font, GRAY, HEIGHT // 2 + 177)
+
+
+# ===========================================================
+# СОСТОЯНИЕ: ВЫБОР СЛОЖНОСТИ (перед первым стартом из меню)
+# ===========================================================
+class DifficultySelectState(State):
+    """Экран выбора сложности — показывается один раз, после главного меню,
+    перед самым первым стартом уровня. Влияет на game.difficulty, а через него —
+    на количество врагов и параметр в spawn-формуле особых врагов (см.
+    DIFFICULTY_* в settings.py и sprites/enemy_factory.spawn_enemy_group).
+    ←/→ или ↑/↓ — выбор, ПРОБЕЛ/ENTER — подтвердить и начать игру, ESC — назад в меню."""
+
+    def __init__(self, game):
+        super().__init__(game)
+        self.time = 0
+        # начинаем выбор с текущей сложности игры (по умолчанию "normal")
+        self.index = DIFFICULTY_LEVELS.index(self.game.difficulty) if self.game.difficulty in DIFFICULTY_LEVELS else 1
+
+    def handle_event(self, event):
+        if event.type != pygame.KEYDOWN:
+            return
+
+        if event.key == pygame.K_ESCAPE:
+            self.game.change_state(MenuState(self.game))
+        elif event.key in (pygame.K_LEFT, pygame.K_a, pygame.K_UP, pygame.K_w):
+            self.index = (self.index - 1) % len(DIFFICULTY_LEVELS)
+        elif event.key in (pygame.K_RIGHT, pygame.K_d, pygame.K_DOWN, pygame.K_s):
+            self.index = (self.index + 1) % len(DIFFICULTY_LEVELS)
+        elif event.key in (pygame.K_SPACE, pygame.K_RETURN):
+            self.game.difficulty = DIFFICULTY_LEVELS[self.index]
+            self.game.new_level()
+            self.game.change_state(PlayingState(self.game))
+
+    def update(self):
+        self.time += 1
+
+    def draw(self, screen):
+        g = self.game
+        draw_dark_background(screen, self.time, g.theme, g.spore_count)
+
+        draw_text_centered(screen, "ВЫБОР СЛОЖНОСТИ", g.big_font, g.theme["accent"], 90)
+
+        option_y = HEIGHT // 2 - 40
+        option_gap = 70
+        for i, level in enumerate(DIFFICULTY_LEVELS):
+            y = option_y + i * option_gap
+            is_selected = (i == self.index)
+            color = g.theme["accent"] if is_selected else WHITE
+            marker = "> " if is_selected else "   "
+            draw_text_centered(screen, f"{marker}{DIFFICULTY_LABELS[level]}", g.font, color, y)
+
+        desc = DIFFICULTY_DESCRIPTIONS[DIFFICULTY_LEVELS[self.index]]
+        draw_text_centered(screen, desc, g.small_font, GRAY, option_y + len(DIFFICULTY_LEVELS) * option_gap + 20)
+
+        draw_text_centered(
+            screen,
+            "←/→ или ↑/↓ — выбрать сложность  •  ПРОБЕЛ/ENTER — начать  •  ESC — назад",
+            g.small_font, GRAY, HEIGHT - 30,
+        )
 
 
 # ===========================================================
@@ -453,7 +560,8 @@ class LeaderboardState(State):
         self.time = 0
         self.filter_index = 0
         self.records = leaderboard.load_leaderboard()
-        self.selected_index = 0
+        self.selected_index = None  # ничего не выделено, пока игрок сам не нажмёт ↑/↓ —
+                                     # раньше тут стоял 0, из-за чего 1-е место подсвечивалось само собой
 
     @property
     def current_filter(self):
@@ -476,18 +584,22 @@ class LeaderboardState(State):
         elif event.key in (pygame.K_LEFT, pygame.K_a, pygame.K_RIGHT, pygame.K_d):
             direction = -1 if event.key in (pygame.K_LEFT, pygame.K_a) else 1
             self.filter_index = (self.filter_index + direction) % len(self.FILTERS)
-            self.selected_index = 0
+            self.selected_index = None
         elif event.key in (pygame.K_UP, pygame.K_w) and rows:
-            self.selected_index = (self.selected_index - 1) % len(rows)
+            self.selected_index = (
+                len(rows) - 1 if self.selected_index is None else (self.selected_index - 1) % len(rows)
+            )
         elif event.key in (pygame.K_DOWN, pygame.K_s) and rows:
-            self.selected_index = (self.selected_index + 1) % len(rows)
-        elif event.key in (pygame.K_DELETE, pygame.K_x) and rows:
+            self.selected_index = (
+                0 if self.selected_index is None else (self.selected_index + 1) % len(rows)
+            )
+        elif event.key in (pygame.K_DELETE, pygame.K_x) and rows and self.selected_index is not None:
             # Удаляем именно тот результат (старого лидера), что сейчас выделен,
             # а не по индексу в другом порядке сортировки
             record_to_remove = rows[self.selected_index]
             leaderboard.remove_result(self.records, record_to_remove)
             self.records = leaderboard.load_leaderboard()
-            self.selected_index = max(0, min(self.selected_index, len(self.records) - 1))
+            self.selected_index = max(0, min(self.selected_index, len(self.records) - 1)) if self.records else None
 
     def update(self):
         self.time += 1
@@ -501,7 +613,8 @@ class LeaderboardState(State):
                             g.font, WHITE, 85)
 
         rows = self._sorted_records()[:LEADERBOARD_DISPLAY_COUNT]
-        self.selected_index = max(0, min(self.selected_index, len(rows) - 1)) if rows else 0
+        if self.selected_index is not None:
+            self.selected_index = max(0, min(self.selected_index, len(rows) - 1)) if rows else None
 
         if not rows:
             draw_text_centered(screen, "Пока нет результатов — пройди игру до конца!",
@@ -533,7 +646,7 @@ class LeaderboardState(State):
 
         for i, (record, value) in enumerate(zip(rows, values)):
             y = start_y + i * row_height
-            is_selected = (i == self.selected_index)
+            is_selected = (self.selected_index is not None and i == self.selected_index)
 
             if is_selected:
                 highlight_rect = pygame.Rect(16, y - 4, WIDTH - 32, row_height - 6)
@@ -625,7 +738,7 @@ class PlayingState(State):
         # саму стрелу создаём здесь, где есть доступ к группе снарядов игрока ---
         if g.player.arrow_requested:
             x, y, direction = g.player.get_arrow_spawn()
-            arrow_damage = WEAPON_STATS["bow"]["damage"]
+            arrow_damage = g.player.get_current_damage()
             g.player_arrows.add(Arrow(x, y, direction, arrow_damage))
 
         collected = pygame.sprite.spritecollide(g.player, g.coins, dokill=True)
@@ -636,7 +749,7 @@ class PlayingState(State):
         for weapon in picked_weapons:
             g.player.equip_weapon(weapon.weapon_id)
 
-        current_damage = WEAPON_STATS[g.player.weapon_id]["damage"]
+        current_damage = g.player.get_current_damage()
 
         # --- атаки наносят врагам урон текущим оружием (раньше, чем сработает
         # урон от простого касания) ---
@@ -675,8 +788,8 @@ class PlayingState(State):
             for enemy in g.enemies:
                 if g.player.rect.colliderect(enemy.rect):
                     if g.player.vel_y > 0 and g.player.rect.bottom - enemy.rect.top < 20:
-                        # запрыгнули врагу на голову — мгновенная смерть врага, урон не наносится игроку
-                        enemy.kill()
+                        # запрыгнули врагу на голову — просто отскакиваем, враг остаётся жив
+                        # (урон касанием игроку тоже не наносится, но и враг больше не умирает мгновенно)
                         g.player.vel_y = JUMP_STRENGTH / 1.5
                     else:
                         knockback_dir = -1 if g.player.rect.centerx < enemy.rect.centerx else 1
@@ -688,8 +801,20 @@ class PlayingState(State):
                 hit = projectile_hits[0]
                 g.player.take_damage(PROJECTILE_DAMAGE, hit.direction)
 
+            # --- зона урона "удара оземь" босса (danger_rect) — сама не входит
+            # в enemies, поэтому обычная проверка касания её не ловит ---
+            if g.boss is not None and g.boss.danger_rect is not None:
+                if g.player.rect.colliderect(g.boss.danger_rect):
+                    knockback_dir = -1 if g.player.rect.centerx < g.boss.rect.centerx else 1
+                    g.player.take_damage(BOSS_SLAM_DAMAGE, knockback_dir)
+
         if not g.player.alive:
             g.change_state(LostState(g))
+            return
+
+        # --- победа над боссом сразу завершает игру — флага в его комнате нет ---
+        if g.boss is not None and g.boss.hp <= 0:
+            g.change_state(WonState(g))
             return
 
         # --- двери между комнатами: касание триггерит фейд-переход ---
@@ -707,6 +832,8 @@ class PlayingState(State):
 
     def draw(self, screen):
         draw_world(self.game, screen)
+        if self.game.boss is not None and self.game.boss.hp > 0:
+            draw_boss_health_bar(screen, self.game)
         if self.game.drawing_mode or self.game.draw_result_timer > 0:
             draw_weapon_canvas_overlay(self.game, screen)
 
@@ -956,9 +1083,35 @@ def draw_hp_bar(screen, player, theme):
         pygame.draw.polygon(screen, theme["mask_outline"], points, 2)
 
 
+def draw_boss_health_bar(screen, game):
+    """Хелсбар босса — всегда виден, пока он жив (не только когда его атакуют),
+    большой и по центру сверху экрана, чтобы сразу было понятно, что идёт бой
+    с боссом. hp/max_hp берутся напрямую из game.boss (см. Game.load_room)."""
+    boss = game.boss
+    bar_width = 420
+    bar_height = 22
+    x = WIDTH // 2 - bar_width // 2
+    y = 18
+
+    label = game.small_font.render("БОСС", True, WHITE)
+    screen.blit(label, (x, y - 20))
+
+    pygame.draw.rect(screen, (30, 10, 12), (x, y, bar_width, bar_height), border_radius=4)
+    ratio = max(0.0, boss.hp / boss.max_hp) if boss.max_hp else 0.0
+    fill_width = int(bar_width * ratio)
+    if fill_width > 0:
+        pygame.draw.rect(screen, (200, 40, 50), (x, y, fill_width, bar_height), border_radius=4)
+    pygame.draw.rect(screen, WHITE, (x, y, bar_width, bar_height), width=2, border_radius=4)
+
+    hp_text = game.small_font.render(f"{max(0, boss.hp)}/{boss.max_hp}", True, WHITE)
+    screen.blit(hp_text, (x + bar_width // 2 - hp_text.get_width() // 2, y + 1))
+
+
 def draw_weapon_icon(screen, game):
     """Панель всех трёх оружий (все доступны сразу) справа от полосок здоровья —
-    текущее выделено рамкой, рядом номер клавиши для быстрого переключения (1/2/3)."""
+    текущее выделено рамкой, рядом номер клавиши для быстрого переключения (1/2/3).
+    Под панелью — процент уверенности распознавания текущего оружия (влияет на
+    реальный урон, см. Player.get_current_damage())."""
     mask_size = 22
     gap = 8
     x0, y0 = 20, 50
@@ -979,13 +1132,23 @@ def draw_weapon_icon(screen, game):
         number_text = game.small_font.render(str(i + 1), True, WHITE)
         screen.blit(number_text, (slot_x, y + WEAPON_ICON_HUD_SIZE + 2))
 
+    confidence_pct = int(round(game.player.weapon_confidence * 100))
+    confidence_text = game.small_font.render(f"Урон: {confidence_pct}%", True, WHITE)
+    screen.blit(confidence_text, (x, y + WEAPON_ICON_HUD_SIZE + 22))
+
 
 def draw_world(game: Game, screen):
     bg_image = game.backgrounds_dict.get(game.room_id)
     if bg_image is not None:
         draw_background_image(screen, bg_image)
     else:
-        draw_dark_background(screen, pygame.time.get_ticks() // 16, game.theme, game.spore_count)
+        # Для комнат без готовой картинки, но с переопределением палитры
+        # (ROOM_BG_FALLBACK — новые "весёлые" комнаты meadow/orchard/sky/summit),
+        # подмешиваем её цвета поверх выбранной в настройках темы — только фон,
+        # HUD (маски HP, акцент) остаётся в цветах глобальной темы.
+        bg_theme = dict(game.theme)
+        bg_theme.update(ROOM_BG_FALLBACK.get(game.room_id, {}))
+        draw_dark_background(screen, pygame.time.get_ticks() // 16, bg_theme, game.spore_count)
 
     cam = game.camera_x
 

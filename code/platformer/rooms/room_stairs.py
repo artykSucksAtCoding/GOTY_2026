@@ -2,14 +2,17 @@ import pygame
 from settings import *
 from sprites.platforms import Platform
 from sprites.coins import Coin
-from sprites.enemy import Enemy
+from sprites.enemy_factory import spawn_enemy_group
 from .base import Room, RoomExit
+
+ROOM_ID = "stairs"
+DIFFICULTY = ROOM_DIFFICULTY[ROOM_ID]
 
 ROOM_WIDTH = 1300
 ROOM_HEIGHT = HEIGHT
 
 
-def build():
+def build(game_difficulty="normal"):
     platforms = pygame.sprite.Group()
     coins = pygame.sprite.Group()
     enemies = pygame.sprite.Group()
@@ -40,8 +43,11 @@ def build():
 
     # Враги поджидают на паре средних ступеней — надо разобраться с ними
     # прямо во время подъёма, не имея твёрдой земли под ногами вокруг
-    enemies.add(Enemy(480, HEIGHT - 190 - 32, 470, 630))
-    enemies.add(Enemy(900, HEIGHT - 350 - 32, 890, 1050))
+    enemy_positions = [
+        (480, HEIGHT - 190 - 32, 470, 630),
+        (900, HEIGHT - 350 - 32, 890, 1050),
+    ]
+    enemies.add(spawn_enemy_group(enemy_positions, DIFFICULTY, game_difficulty))
 
     exits = [
         RoomExit(

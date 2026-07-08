@@ -2,7 +2,7 @@ import pygame
 from settings import *
 from sprites.platforms import Platform
 from sprites.coins import Coin
-from sprites.enemy_factory import spawn_enemy
+from sprites.enemy_factory import spawn_enemy_group
 from .base import Room, RoomExit
 
 ROOM_ID = "caves"
@@ -12,7 +12,7 @@ ROOM_WIDTH = 1350
 ROOM_HEIGHT = HEIGHT
 
 
-def build():
+def build(game_difficulty="normal"):
     platforms = pygame.sprite.Group()
     coins = pygame.sprite.Group()
     enemies = pygame.sprite.Group()
@@ -37,8 +37,11 @@ def build():
     for (x, y) in coin_positions:
         coins.add(Coin(x, y))
 
-    enemies.add(spawn_enemy(340, HEIGHT - 40 - 32, 330, 590, difficulty=DIFFICULTY))
-    enemies.add(spawn_enemy(660, HEIGHT - 120 - 32, 660, 880, difficulty=DIFFICULTY))
+    enemy_positions = [
+        (340, HEIGHT - 40 - 32, 330, 590),
+        (660, HEIGHT - 120 - 32, 660, 880),
+    ]
+    enemies.add(spawn_enemy_group(enemy_positions, DIFFICULTY, game_difficulty))
 
     # --- дверь налево — обратно в лес; дверь направо — дальше, на мост ---
     exits = [

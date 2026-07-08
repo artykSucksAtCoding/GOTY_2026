@@ -3,6 +3,11 @@ from . import room_caves
 from . import room_bridge
 from . import room_stairs
 from . import room_vault
+from . import room_meadow
+from . import room_orchard
+from . import room_sky
+from . import room_summit
+from . import room_boss
 
 # --- Реестр комнат ---
 # Чтобы добавить новую комнату:
@@ -16,12 +21,20 @@ ROOM_BUILDERS = {
     "bridge": room_bridge.build,
     "stairs": room_stairs.build,
     "vault": room_vault.build,
+    "meadow": room_meadow.build,
+    "orchard": room_orchard.build,
+    "sky": room_sky.build,
+    "summit": room_summit.build,
+    "boss": room_boss.build,
 }
 
 
-def build_room(room_id):
+def build_room(room_id, game_difficulty="normal"):
     """Создаёт свежий экземпляр комнаты по её id (заново собирает спрайты —
-    так что монеты/враги каждый раз восстанавливаются при повторном заходе)."""
+    так что монеты/враги каждый раз восстанавливаются при повторном заходе).
+    game_difficulty — глобальная сложность, выбранная игроком в меню перед
+    стартом (см. DIFFICULTY_LEVELS в settings.py) — влияет на количество
+    врагов и их параметры (см. sprites/enemy_factory.spawn_enemy_group)."""
     try:
         builder = ROOM_BUILDERS[room_id]
     except KeyError:
@@ -29,7 +42,7 @@ def build_room(room_id):
             f"Неизвестная комната '{room_id}'. "
             f"Доступные: {', '.join(ROOM_BUILDERS.keys())}"
         )
-    return builder()
+    return builder(game_difficulty)
 
 
 def first_room_id():

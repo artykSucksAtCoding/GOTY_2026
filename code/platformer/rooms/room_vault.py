@@ -2,15 +2,17 @@ import pygame
 from settings import *
 from sprites.platforms import Platform
 from sprites.coins import Coin
-from sprites.enemy import Enemy
-from sprites.flag import Flag
+from sprites.enemy_factory import spawn_enemy_group
 from .base import Room, RoomExit
+
+ROOM_ID = "vault"
+DIFFICULTY = ROOM_DIFFICULTY[ROOM_ID]
 
 ROOM_WIDTH = 1200
 ROOM_HEIGHT = HEIGHT
 
 
-def build():
+def build(game_difficulty="normal"):
     platforms = pygame.sprite.Group()
     coins = pygame.sprite.Group()
     enemies = pygame.sprite.Group()
@@ -21,7 +23,8 @@ def build():
         (660, HEIGHT - 40, 250, 40),
         (300, HEIGHT - 160, 150, 20),
         (550, HEIGHT - 240, 150, 20),
-        (950, HEIGHT - 320, 220, 20),   # платформа-сокровищница с флагом
+        # платформа-сокровищница продлена до самого края комнаты — по ней уходим дальше, на луг
+        (950, HEIGHT - 320, 250, 20),
         # уединённая площадка высоко над комнатой — только двойным прыжком с (550, HEIGHT-240)
         (480, 90, 70, 16),
     ]
@@ -39,31 +42,38 @@ def build():
     for (x, y) in coin_positions:
         coins.add(Coin(x, y))
 
-    # Пара стражей у самого сокровища — последнее препятствие перед флагом
-    enemies.add(Enemy(680, HEIGHT - 40 - 32, 660, 900))
-    enemies.add(Enemy(960, HEIGHT - 320 - 32, 950, 1140))
-
-    flag = Flag(1100, HEIGHT - 320 - 70)
+    # Пара стражей у самого сокровища — последнее препятствие перед выходом дальше
+    enemy_positions = [
+        (680, HEIGHT - 40 - 32, 660, 900),
+        (960, HEIGHT - 320 - 32, 950, 1190),
+    ]
+    enemies.add(spawn_enemy_group(enemy_positions, DIFFICULTY, game_difficulty))
 
     # уединённая площадка высоко в комнате остаётся бонусным паркуром за монетами —
     # все оружия у игрока уже доступны с начала игры
     weapons = pygame.sprite.Group()
 
-    # Только дверь назад — это последняя комната цепочки, дальше идти некуда
+    # Дверь назад — на лестницу; дверь вперёд — на солнечный луг (дальше по пути)
     exits = [
         RoomExit(
             rect=pygame.Rect(0, 0, 10, ROOM_HEIGHT),
             target_room="stairs",
             entry_side="right",
         ),
+        RoomExit(
+            rect=pygame.Rect(ROOM_WIDTH - 10, 0, 10, ROOM_HEIGHT),
+            target_room="meadow",
+            entry_side="left",
+        ),
     ]
 
     spawn_points = {
         "default": (40, HEIGHT - 100),
-        "left": (40, HEIGHT - 100),   # приход по лестнице
+        "left": (40, HEIGHT - 100),                        # приход по лестнице
+        "right": (ROOM_WIDTH - 90, HEIGHT - 320 - 48),      # возвращение с луга — на платформе-сокровищнице
     }
 
     return Room(
         platforms, coins, enemies, ROOM_WIDTH, ROOM_HEIGHT,
-        flag=flag, exits=exits, spawn_points=spawn_points, weapons=weapons,
+        flag=None, exits=exits, spawn_points=spawn_points, weapons=weapons,
     )

@@ -60,10 +60,14 @@ class WeaponRecognizer:
 
     def predict(self, canvas_surface):
         """canvas_surface — pygame.Surface с рисунком (белый фон, чёрные линии,
-        как в холсте tkinter-программы). Возвращает weapon_id ("sword"/"axe"/"bow")
-        или None, если распознавание недоступно/не удалось сопоставить класс."""
+        как в холсте tkinter-программы). Возвращает (weapon_id, confidence), где
+        weapon_id — "sword"/"axe"/"bow" или None, если распознавание недоступно/не
+        удалось сопоставить класс; confidence — уверенность модели в выбранном
+        классе (0..1, из predict_proba), используется для масштабирования урона
+        оружия (см. WEAPON_STATS / get_current_damage() в player.py). Если модель
+        не умеет отдавать вероятности, возвращается запасное значение 1.0."""
         if not self.available:
-            return None
+            return None, 0.0
 
         # Уменьшаем холст до того же разрешения, в котором обучалась модель
         # (SAVE_SIZE=240 в weapon_recogniser.py), переводим в градации серого
@@ -79,7 +83,15 @@ class WeaponRecognizer:
         try:
             pred_idx = int(self.model.predict(flat)[0])
         except Exception:
-            return None
+            return None, 0.0
+
+        confidence = 1.0
+        try:
+            proba = self.model.predict_proba(flat)[0]
+            confidence = float(proba[pred_idx])
+        except Exception:
+            pass  # модель без predict_proba — оставляем уверенность 1.0
 
         label = str(self.class_names[pred_idx]) if self.class_names else str(pred_idx)
-        return WEAPON_RECOGNIZER_CLASS_TO_WEAPON.get(label.strip().lower())
+        weapon_id = WEAPON_RECOGNIZER_CLASS_TO_WEAPON.get(label.strip().lower())
+        return weapon_id, confidence

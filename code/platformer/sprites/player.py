@@ -52,6 +52,10 @@ class Player(pygame.sprite.Sprite):
         # Все оружия доступны сразу — просто переключаются клавишами 1/2/3
         # (WEAPON_SWITCH_KEYS в settings.py), подбирать/находить их не нужно.
         self.weapon_id = "sword"          # см. WEAPON_ICON_PATHS / WEAPON_STATS в settings.py
+        # Уверенность ML-распознавания текущего оружия (0..1) — масштабирует урон
+        # (см. get_current_damage()). По умолчанию (переключение клавишами,
+        # старт игры) считаем 50% — см. WEAPON_RECOGNITION_DEFAULT_CONFIDENCE.
+        self.weapon_confidence = WEAPON_RECOGNITION_DEFAULT_CONFIDENCE
         self.arrow_requested = False      # True ровно в кадр выстрела из лука (game.py создаёт стрелу)
 
         # --- саунд эффекты ---
@@ -100,9 +104,20 @@ class Player(pygame.sprite.Sprite):
         self.down_attack_active = False
         self.attack_hit_ids = set()
 
-    def equip_weapon(self, weapon_id):
-        """Переключает текущее оружие игрока на weapon_id (см. WEAPON_STATS в settings.py)."""
+    def equip_weapon(self, weapon_id, confidence=None):
+        """Переключает текущее оружие игрока на weapon_id (см. WEAPON_STATS в settings.py).
+        confidence — уверенность ML-распознавания (0..1), если оружие подключено через
+        холст рисования (см. Game.finish_weapon_drawing); при обычном переключении
+        (клавиши/подбор предмета) confidence не передаётся — используется дефолт 50%."""
         self.weapon_id = weapon_id
+        self.weapon_confidence = confidence if confidence is not None else WEAPON_RECOGNITION_DEFAULT_CONFIDENCE
+
+    def get_current_damage(self):
+        """Реальный урон текущего оружия — WEAPON_STATS[...]["damage"] масштабируется
+        линейно процентом уверенности ML-распознавания (weapon_confidence), но не
+        меньше 1 (иначе неудачный рисунок оставлял бы оружие бесполезным)."""
+        max_damage = WEAPON_STATS[self.weapon_id]["damage"]
+        return max(1, round(max_damage * self.weapon_confidence))
 
     def update(self, platforms):
         keys = pygame.key.get_pressed()
@@ -197,7 +212,7 @@ class Player(pygame.sprite.Sprite):
             if not self.is_attacking and not self.down_attack_active:
                 for key, weapon_id in WEAPON_SWITCH_KEYS.items():
                     if keys[key] and weapon_id != self.weapon_id:
-                        self.weapon_id = weapon_id
+                        self.equip_weapon(weapon_id)
                         break
 
             weapon_stats = WEAPON_STATS[self.weapon_id]

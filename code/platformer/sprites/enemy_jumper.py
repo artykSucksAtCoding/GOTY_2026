@@ -1,6 +1,6 @@
 import pygame
 from settings import *
-from sprites.enemy import Enemy
+from sprites.enemy import Enemy, _draw_grunt_body
 
 
 class JumperEnemy(Enemy):
@@ -12,10 +12,10 @@ class JumperEnemy(Enemy):
     def __init__(self, x, y, left_bound, right_bound, difficulty=1):
         super().__init__(x, y, left_bound, right_bound)
         # перекрашиваем в жёлтый, чтобы визуально отличался от обычного врага
-        self.image = pygame.Surface((31, 32), pygame.SRCALPHA)
-        pygame.draw.rect(self.image, YELLOW, (-1, 0, 32, 32), border_radius=6)
-        pygame.draw.rect(self.image, BLACK, (5, 10, 6, 6))
-        pygame.draw.rect(self.image, BLACK, (19, 10, 6, 6))
+        # (тело/рог/глаза/клык те же, что у базового врага — см. _draw_grunt_body)
+        self.image_right = _draw_grunt_body(YELLOW)
+        self.image_left = pygame.transform.flip(self.image_right, True, False)
+        self.image = self.image_right if self.direction >= 0 else self.image_left
 
         self.difficulty = difficulty
         self.jump_strength = JUMPER_JUMP_STRENGTH_BASE + (difficulty - 1) * JUMPER_JUMP_STRENGTH_PER_TIER
@@ -31,6 +31,7 @@ class JumperEnemy(Enemy):
             self.direction = 1
         elif self.rect.right >= self.right_bound:
             self.direction = -1
+        self.image = self.image_right if self.direction >= 0 else self.image_left
 
         if self.jump_cooldown > 0:
             self.jump_cooldown -= 1

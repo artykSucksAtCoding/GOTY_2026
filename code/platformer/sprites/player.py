@@ -1,15 +1,109 @@
 import pygame
 from settings import *
 
+# ===========================================================
+# ПИКСЕЛЬНЫЙ РЫЦАРЬ ИГРОКА
+# ===========================================================
+# Спрайт рисуется по пикселям на маленькой сетке 12x16, а потом увеличивается
+# БЕЗ сглаживания (pygame.transform.scale, а не smoothscale) — так сохраняются
+# чёткие пиксельные грани, как в ретро-играх. 12x16 при масштабе x3 даёт ровно
+# 36x48 — прежний размер хитбокса игрока не меняется.
+#
+# Чтобы силуэт читался как ЧЕЛОВЕК в доспехе, а не как робот/маска:
+# - между шлемом и плечами есть узкая шея (открытый тон кожи, а не сплошной
+#   металл встык, как раньше) — главный визуальный признак "человека";
+# - забрало — узкая прорезь-щель (2 пикселя, как глаза), а не сплошная чёрная
+#   панель на всю ширину шлема (это раньше и делало голову похожей на робота);
+# - торс сужается к поясу (плечи шире талии) — человеческая V-образная фигура
+#   вместо прямоугольного "кирпича";
+# - ноги расходятся на две отдельные ступни-сапога.
+#
+# Символы сетки: '.' прозрачно, 'C' плюмаж/гребень шлема, 'H'/'h' шлем
+# (светлый/теневой), 'V' прорезь-щель забрала (глаза), 'S' открытая кожа шеи,
+# 'B' доспех торса, 'A' рука, 'G' пояс, 'L' нога, 'l' сапог.
+_KNIGHT_PIXEL_GRID = [
+    ".....CC.....",
+    "....HHHH....",
+    "...HHHHHH...",
+    "..HHHHHHHH..",
+    "..HHhVVhHH..",
+    "..HHHHHHHH..",
+    "....SSSS....",
+    ".AABBBBBBAA.",
+    ".AABBBBBBAA.",
+    "..ABBBBBBA..",
+    "..ABBBBBBA..",
+    "...BBBBBB...",
+    "...GGGGGG...",
+    "...LLLLLL...",
+    "...LL..LL...",
+    "..lll..lll..",
+]
+
+# Второй кадр — ноги сведены вместе (без просвета между ними). Используется как
+# шаг цикла ходьбы (чередуется со стойкой выше) и как поза в прыжке/падении —
+# минимальная, но заметная анимация без лишних новых спрайтов.
+_KNIGHT_PIXEL_GRID_STEP = (
+    _KNIGHT_PIXEL_GRID[:13]
+    + [
+        "...LLLLLL...",
+        "...LLLLLL...",
+        "...llllll...",
+    ]
+)
+
+_KNIGHT_SHADOW = (150, 150, 165)   # тень доспеха/рук — темнее базового BLUE
+_KNIGHT_SKIN = (215, 175, 145)     # тон кожи открытой шеи — единственный "неметаллический" акцент
+
+_KNIGHT_COLORS = {
+    "C": CYAN,             # плюмаж/гребень шлема — тот же акцент, что у шлейфа дэша
+    "H": BLUE,             # шлем, светлая сторона
+    "h": _KNIGHT_SHADOW,   # шлем, теневая сторона (над прорезью забрала)
+    "V": BLACK,            # прорезь-щель забрала (глаза)
+    "S": _KNIGHT_SKIN,     # открытая кожа шеи
+    "B": BLUE,             # доспех торса
+    "A": _KNIGHT_SHADOW,   # рука
+    "G": GRAY,             # пояс
+    "L": _KNIGHT_SHADOW,   # нога
+    "l": BLACK,            # сапог
+}
+
+_KNIGHT_PIXEL_SIZE = 3  # 12x16 сетка * 3 = 36x48 — совпадает со старым размером игрока
+
+_WALK_ANIM_FRAME_DELAY = 8  # кадров между сменой ноги в цикле ходьбы (~7.5 раз/сек при 60 FPS)
+
+
+def _build_knight_surface(grid=_KNIGHT_PIXEL_GRID):
+    """Собирает спрайт рыцаря из сетки (по умолчанию _KNIGHT_PIXEL_GRID) —
+    маленькая сетка рисуется по пикселям, а затем увеличивается без сглаживания.
+    Принимает grid, чтобы можно было собрать разные кадры анимации (стойка/шаг)
+    из одной и той же функции без дублирования кода отрисовки."""
+    grid_width = len(grid[0])
+    grid_height = len(grid)
+    small = pygame.Surface((grid_width, grid_height), pygame.SRCALPHA)
+    for row_index, row in enumerate(grid):
+        for col_index, ch in enumerate(row):
+            color = _KNIGHT_COLORS.get(ch)
+            if color is not None:
+                small.set_at((col_index, row_index), color)
+    return pygame.transform.scale(
+        small, (grid_width * _KNIGHT_PIXEL_SIZE, grid_height * _KNIGHT_PIXEL_SIZE)
+    )
+
 
 class Player(pygame.sprite.Sprite):
     def __init__(self, x, y):
         super().__init__()
-        self.image = pygame.Surface((36, 48), pygame.SRCALPHA)
-        pygame.draw.rect(self.image, BLUE, (0, 0, 36, 48), border_radius=8)
-        pygame.draw.rect(self.image, BLACK, (8, 12, 8, 8))
-        pygame.draw.rect(self.image, BLACK, (22, 12, 8, 8))
+        # --- анимация: два кадра (стойка/шаг) собираются один раз при создании
+        # игрока и переиспользуются каждый кадр в update() ниже — сама отрисовка
+        # для дэша (растяжение) в game.py трогает game.player.image как обычно,
+        # ей не важно, какой из двух кадров сейчас выбран.
+        self.image_stand = _build_knight_surface(_KNIGHT_PIXEL_GRID)
+        self.image_step = _build_knight_surface(_KNIGHT_PIXEL_GRID_STEP)
+        self.image = self.image_stand
         self.rect = self.image.get_rect(topleft=(x, y))
+        self.anim_timer = 0        # тикает, пока игрок идёт по земле — переключает кадр шага
+        self.anim_walk_frame = False  # False = стойка (кадр 1), True = шаг (кадр 2)
 
         self.vel_x = 0
         self.vel_y = 0
@@ -103,6 +197,10 @@ class Player(pygame.sprite.Sprite):
         self.attack_timer = 0
         self.down_attack_active = False
         self.attack_hit_ids = set()
+
+        self.anim_timer = 0
+        self.anim_walk_frame = False
+        self.image = self.image_stand
 
     def equip_weapon(self, weapon_id, confidence=None):
         """Переключает текущее оружие игрока на weapon_id (см. WEAPON_STATS в settings.py).
@@ -271,6 +369,31 @@ class Player(pygame.sprite.Sprite):
         self.trail = [g for g in self.trail if g["age"] < DASH_TRAIL_MAX_AGE]
         if self.is_dashing:
             self.trail.append({"rect": self.rect.copy(), "age": 0})
+
+        # --- минимальная анимация ходьбы/прыжка: выбираем один из двух готовых
+        # кадров (self.image_stand / self.image_step) в зависимости от того,
+        # идёт игрок по земле или находится в воздухе.
+        # Используем on_ground ИЛИ coyote_timer, а не только on_ground — из-за
+        # особенностей физики (сброс vel_y при приземлении + gravity < 1px)
+        # on_ground мигает True/False каждый кадр даже стоя на месте на ровной
+        # платформе, а coyote_timer остаётся высоким, пока игрок реально на
+        # земле, и сглаживает это мигание, не давая анимации дёргаться. ---
+        grounded = self.on_ground or self.coyote_timer > 0
+        if not grounded:
+            # в воздухе (прыжок/падение) — ноги сведены вместе
+            self.anim_timer = 0
+            self.image = self.image_step
+        elif self.vel_x != 0:
+            self.anim_timer += 1
+            if self.anim_timer >= _WALK_ANIM_FRAME_DELAY:
+                self.anim_timer = 0
+                self.anim_walk_frame = not self.anim_walk_frame
+            self.image = self.image_step if self.anim_walk_frame else self.image_stand
+        else:
+            # стоим на месте — стойка, таймер шага сбрасывается
+            self.anim_timer = 0
+            self.anim_walk_frame = False
+            self.image = self.image_stand
 
     def collide(self, platforms, direction):
         for plat in platforms:

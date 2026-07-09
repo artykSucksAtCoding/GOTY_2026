@@ -1,4 +1,5 @@
 import pygame
+import math
 import sys
 from collections import deque
 from settings import *
@@ -9,6 +10,15 @@ from sprites.boss import BossEnemy
 from rooms import build_room, first_room_id
 from weapon_recognition import WeaponRecognizer
 import leaderboard
+
+
+def _load_bridge_background():
+    """Фон комнаты "bridge" — слегка прозрачный (alpha чуть меньше 255),
+    чтобы сквозь него немного проглядывал тёмный фон позади (см.
+    draw_background_image) и картинка не выглядела совсем "плоской"."""
+    image = pygame.image.load("images/backgrounds/bridge.png").convert_alpha()
+    image.set_alpha(100)
+    return image
 
 
 class Game:
@@ -51,7 +61,7 @@ class Game:
         self.backgrounds_dict = {
             "forest": pygame.image.load("images/backgrounds/forest.png").convert(),
             #"caves": pygame.image.load("images/backgrounds/caves.png").convert(),
-            "bridge": pygame.image.load("images/backgrounds/bridge.png").convert(),
+            "bridge": _load_bridge_background(),
             #"vault": pygame.image.load("images/backgrounds/vault.png").convert(),
             #"meadow": pygame.image.load("images/backgrounds/meadow.png").convert(),
             #"orchard": pygame.image.load("images/backgrounds/orchard.png").convert(),
@@ -1191,6 +1201,10 @@ def draw_dark_background(screen, time_counter, theme, spore_count=14):
 
 
 def draw_background_image(screen, image):
+    # Заливаем тёмным фоном перед фоновой картинкой — если у неё уменьшена
+    # прозрачность (alpha < 255, см. Game.__init__ — фон "bridge"), сквозь неё
+    # будет проглядывать ровный тёмный фон, а не "призрак" прошлого кадра.
+    screen.fill(DARK_BG)
     screen.blit(image, (0, 0))
 
 
@@ -1281,6 +1295,96 @@ def draw_weapon_cooldown_indicator(game, screen):
     screen.blit(cooldown_text, cooldown_rect)
 
 
+# --- Анимации ближней атаки (меч/топор) — референс: взмахи оружия из Hollow
+# Knight/Silksong (быстрая тонкая дуга "гвоздя" у меча, широкий тяжёлый замах
+# у топора). Дуга всегда рисуется "лицом вправо" в пределах attack_rect
+# (rect уже точно совпадает с хитбоксом атаки — см. Player.get_attack_rect),
+# а затем отзеркаливается по player.facing_right — так же, как у спрайтов
+# врагов/игрока. Анимации нет по кадрам, есть только процедурный "разворот"
+# дуги во времени (progress = доля прошедшего времени взмаха), поэтому
+# отдельных файлов кадров не требуется.
+def _build_melee_slash_surface(weapon_id, w, h, progress):
+    """progress: 0..1 — доля прошедшего времени взмаха (0 = начало, 1 = конец
+    attack_timer). Возвращает surface размером (w, h), т.е. ровно как у
+    attack_rect, чтобы дуга визуально точно совпадала с хитбоксом атаки."""
+    surf = pygame.Surface((w, h), pygame.SRCALPHA)
+
+    if weapon_id == "sword":
+        # меч — короткий, очень быстрый тонкий взмах (как нейл-атака в HK)
+        sweep_start_deg, sweep_end_deg = -55, 55
+        max_width = 4
+        color = (245, 245, 255)
+        layers = 2
+        reveal = min(1.0, progress / 0.6)
+        fade = 1.0 if progress < 0.55 else max(0.0, 1.0 - (progress - 0.55) / 0.45)
+        radius_scale = 1.15
+    else:
+        # топор — медленный, широкий и тяжёлый замах с сильной вспышкой удара
+        sweep_start_deg, sweep_end_deg = -85, 85
+        max_width = 8
+        color = (255, 170, 60)
+        layers = 3
+        reveal = min(1.0, progress / 0.55)
+        fade = 1.0 if progress < 0.7 else max(0.0, 1.0 - (progress - 0.7) / 0.3)
+        radius_scale = 1.3
+
+    if fade <= 0:
+        return surf
+
+    start_rad = math.radians(sweep_start_deg)
+    end_rad = math.radians(sweep_start_deg + (sweep_end_deg - sweep_start_deg) * reveal)
+    if end_rad <= start_rad:
+        return surf
+
+    bounding = pygame.Rect(0, 0, int(w * radius_scale), int(h * radius_scale))
+    bounding.center = (w * 0.3, h * 0.5)
+
+    outer_rect = None
+    for i in range(layers):
+        rect_i = bounding.inflate(i * 5, i * 5)
+        if outer_rect is None:
+            outer_rect = rect_i
+        width_i = max(1, max_width - i * 2)
+        alpha = int(255 * fade * (1 - i * 0.3))
+        if alpha <= 0:
+            continue
+        pygame.draw.arc(surf, (*color, alpha), rect_i, start_rad, end_rad, width_i)
+
+    # вспышка удара топора — заполненный клин в момент завершения замаха
+    if weapon_id == "axe" and progress > 0.75:
+        impact_alpha = int(180 * min(1.0, (progress - 0.75) / 0.2))
+        tip_x = outer_rect.centerx + (outer_rect.width / 2) * math.cos(end_rad)
+        tip_y = outer_rect.centery - (outer_rect.height / 2) * math.sin(end_rad)
+        pygame.draw.circle(surf, (255, 210, 120, impact_alpha), (int(tip_x), int(tip_y)), 6)
+
+    return surf
+
+
+def draw_melee_slash(game, screen, cam):
+    """Отрисовывает анимацию взмаха текущим ближним оружием поверх хитбокса
+    атаки (attack_rect), если сейчас идёт удар мечом/топором (у лука ближнего
+    хитбокса нет — get_attack_rect() вернёт None)."""
+    player = game.player
+    attack_rect = player.get_attack_rect()
+    if attack_rect is None:
+        return
+    weapon_id = player.weapon_id
+    if weapon_id not in ("sword", "axe"):
+        return
+
+    stats = WEAPON_STATS[weapon_id]
+    duration = stats["duration_frames"]
+    if duration <= 0:
+        return
+    progress = 1.0 - (player.attack_timer / duration)
+    progress = max(0.0, min(1.0, progress))
+
+    slash = _build_melee_slash_surface(weapon_id, attack_rect.width, attack_rect.height, progress)
+    if not player.facing_right:
+        slash = pygame.transform.flip(slash, True, False)
+    screen.blit(slash, attack_rect.move(-cam, 0))
+
+
 def draw_world(game: Game, screen):
     bg_image = game.backgrounds_dict.get(game.room_id)
     if bg_image is not None:
@@ -1342,12 +1446,7 @@ def draw_world(game: Game, screen):
         else:
             screen.blit(game.player.image, player_rect)
 
-    attack_rect = game.player.get_attack_rect()
-    if attack_rect is not None:
-        r = attack_rect.move(-cam, 0)
-        slash_surf = pygame.Surface(r.size, pygame.SRCALPHA)
-        pygame.draw.ellipse(slash_surf, (*WHITE, 200), slash_surf.get_rect())
-        screen.blit(slash_surf, r)
+    draw_melee_slash(game, screen, cam)
 
     down_attack_rect = game.player.get_down_attack_rect()
     if down_attack_rect is not None:

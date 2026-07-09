@@ -3,6 +3,24 @@ from settings import *
 from sprites.enemy import Enemy
 from sprites.projectile import Projectile
 
+_SHOOTER_COLOR = (150, 90, 190)
+
+
+def _draw_shooter_body():
+    """Рисует тело стрелка лицом вправо: антенна на заднем верхнем углу и
+    короткий "ствол" (жало), торчащий вперёд — сразу видно, откуда полетит
+    снаряд и куда сейчас смотрит враг."""
+    image = pygame.Surface((31, 32), pygame.SRCALPHA)
+    pygame.draw.rect(image, _SHOOTER_COLOR, (-1, 0, 32, 32), border_radius=6)
+    # антенна на заднем (левом) верхнем углу
+    pygame.draw.line(image, GRAY, (4, 6), (1, 0), 2)
+    pygame.draw.circle(image, GRAY, (1, 0), 2)
+    pygame.draw.rect(image, BLACK, (5, 11, 5, 5))
+    pygame.draw.rect(image, BLACK, (17, 9, 7, 7))
+    # ствол/жало, торчащее вперёд (вправо) на уровне переднего глаза
+    pygame.draw.rect(image, BLACK, (26, 12, 6, 5))
+    return image
+
 
 class ShooterEnemy(Enemy):
     """Патрулирует как обычный враг. Если игрок оказывается примерно на той же
@@ -11,11 +29,11 @@ class ShooterEnemy(Enemy):
 
     def __init__(self, x, y, left_bound, right_bound, difficulty=1):
         super().__init__(x, y, left_bound, right_bound)
-        # перекрашиваем в фиолетовый, чтобы визуально отличался
-        self.image = pygame.Surface((31, 32), pygame.SRCALPHA)
-        pygame.draw.rect(self.image, (150, 90, 190), (-1, 0, 32, 32), border_radius=6)
-        pygame.draw.rect(self.image, BLACK, (5, 10, 6, 6))
-        pygame.draw.rect(self.image, BLACK, (19, 10, 6, 6))
+        # перекрашиваем в фиолетовый и добавляем ствол/антенну — визуально
+        # отличается от обычного врага и явно показывает направление
+        self.image_right = _draw_shooter_body()
+        self.image_left = pygame.transform.flip(self.image_right, True, False)
+        self.image = self.image_right if self.direction >= 0 else self.image_left
 
         self.difficulty = difficulty
         self.projectile_speed = PROJECTILE_SPEED_BASE + (difficulty - 1) * PROJECTILE_SPEED_PER_TIER
@@ -30,6 +48,7 @@ class ShooterEnemy(Enemy):
             self.direction = 1
         elif self.rect.right >= self.right_bound:
             self.direction = -1
+        self.image = self.image_right if self.direction >= 0 else self.image_left
 
         if self.shoot_cooldown > 0:
             self.shoot_cooldown -= 1

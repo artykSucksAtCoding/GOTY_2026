@@ -5,6 +5,29 @@ from sprites.enemy import Enemy
 from sprites.projectile import Projectile
 
 
+def _draw_boss_body(color):
+    """Рисует тело босса лицом вправо для заданного цвета корпуса (обычный
+    или "телеграф" перед ударом оземь) — асимметрично: более крупный шип на
+    переднем (правом) плече, поменьше на заднем, и когтистая лапа, тянущаяся
+    вперёд. Возвращает новую Surface — вызывается заново каждый кадр, т.к.
+    цвет корпуса и текущее направление (facing) могут поменяться."""
+    image = pygame.Surface((70, 90), pygame.SRCALPHA)
+    pygame.draw.rect(image, color, (0, 0, 70, 90), border_radius=10)
+    pygame.draw.rect(image, (150, 30, 40), (0, 0, 70, 90), border_radius=10, width=3)
+    # шип на заднем (левом) плече — маленький
+    pygame.draw.polygon(image, (150, 30, 40), [(18, 10), (4, 3), (13, 20)])
+    # шип на переднем (правом) плече — крупный, указывает направление
+    pygame.draw.polygon(image, (150, 30, 40), [(52, 7), (68, -2), (59, 19)])
+    pygame.draw.rect(image, BLACK, (16, 26, 12, 12))
+    pygame.draw.rect(image, BLACK, (42, 26, 12, 12))
+    # ряд зубов
+    for tooth_x in range(20, 50, 7):
+        pygame.draw.polygon(image, BLACK, [(tooth_x, 44), (tooth_x + 5, 44), (tooth_x + 2, 50)])
+    # когтистая лапа, тянущаяся вперёд (вправо)
+    pygame.draw.polygon(image, (150, 30, 40), [(56, 46), (70, 50), (64, 63), (55, 60)])
+    return image
+
+
 class BossEnemy(Enemy):
     """Финальный босс (комната BOSS_ROOM_ID). ХП зависит от глобальной сложности
     (BOSS_MAX_HP), а не от тира комнаты, как у обычных врагов. Между атаками
@@ -22,14 +45,11 @@ class BossEnemy(Enemy):
         super().__init__(x, y, left_bound, right_bound)
 
         # крупный тёмный силуэт — явно отличается от рядовых врагов
-        self.image = pygame.Surface((70, 90), pygame.SRCALPHA)
-        pygame.draw.rect(self.image, (60, 20, 30), (0, 0, 70, 90), border_radius=10)
-        pygame.draw.rect(self.image, (150, 30, 40), (0, 0, 70, 90), border_radius=10, width=3)
-        pygame.draw.rect(self.image, BLACK, (16, 26, 12, 12))
-        pygame.draw.rect(self.image, BLACK, (42, 26, 12, 12))
-        self.rect = self.image.get_rect(topleft=(x, y))
         self._base_color = (60, 20, 30)
         self._telegraph_color = (200, 60, 40)
+        self.facing = 1  # 1 = лицом вправо, -1 = влево; обновляется по позиции игрока
+        self.image = _draw_boss_body(self._base_color)
+        self.rect = self.image.get_rect(topleft=(x, y))
 
         self.max_hp = BOSS_MAX_HP.get(game_difficulty, BOSS_MAX_HP["normal"])
         self.hp = self.max_hp
@@ -78,6 +98,7 @@ class BossEnemy(Enemy):
                 self.attack_cooldown -= 1
             elif player is not None:
                 self._start_attack(player)
+            self._sync_facing(player)
             return
 
         if self.state == "charge":
@@ -123,7 +144,14 @@ class BossEnemy(Enemy):
         # Перекрашиваем корпус во время телеграфа удара оземь — заметное
         # предупреждение игроку, что вот-вот будет урон на полу
         color = self._telegraph_color if self.state == "slam_telegraph" else self._base_color
-        pygame.draw.rect(self.image, color, (0, 0, 70, 90), border_radius=10)
-        pygame.draw.rect(self.image, (150, 30, 40), (0, 0, 70, 90), border_radius=10, width=3)
-        pygame.draw.rect(self.image, BLACK, (16, 26, 12, 12))
-        pygame.draw.rect(self.image, BLACK, (42, 26, 12, 12))
+        self._sync_facing(player, color)
+
+    def _sync_facing(self, player, color=None):
+        """Перерисовывает тело босса (нужно для смены цвета во время телеграфа
+        удара оземь) и разворачивает его лицом к игроку — тело лицом вправо
+        рисуется заново, затем отзеркаливается, если игрок сейчас слева."""
+        if player is not None and player.rect.centerx != self.rect.centerx:
+            self.facing = 1 if player.rect.centerx >= self.rect.centerx else -1
+        body_color = color if color is not None else self._base_color
+        canonical = _draw_boss_body(body_color)
+        self.image = canonical if self.facing >= 0 else pygame.transform.flip(canonical, True, False)

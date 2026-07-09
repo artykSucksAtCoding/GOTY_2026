@@ -1,4 +1,6 @@
 import json
+import os
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -12,7 +14,20 @@ from settings import (
 # Путь считается от расположения ЭТОГО файла, а не от текущей рабочей директории —
 # так игра сохраняет результаты в одно и то же место независимо от того,
 # из какой папки её запустили (PyCharm, терминал, двойной клик и т.п.)
-BASE_DIR = Path(__file__).resolve().parent
+#
+# ИСКЛЮЧЕНИЕ — установленная через installer/ версия (PyInstaller): там файлы
+# игры обычно лежат в "Program Files", куда обычный пользователь (без прав
+# администратора) не может писать — сохранение рекордов рядом с .exe там либо
+# не сработает, либо (для всех пользователей сразу) будет путать чужие сейвы.
+# Поэтому в "заморожённом" виде используем стандартную пользовательскую папку
+# %APPDATA%\BestGameEver — это и есть общепринятое место для таких файлов
+# у установленных Windows-приложений.
+if getattr(sys, "frozen", False):
+    _appdata = os.getenv("APPDATA") or str(Path.home())
+    BASE_DIR = Path(_appdata) / "BestGameEver"
+    BASE_DIR.mkdir(parents=True, exist_ok=True)
+else:
+    BASE_DIR = Path(__file__).resolve().parent
 LEADERBOARD_PATH = BASE_DIR / LEADERBOARD_FILE_NAME
 
 

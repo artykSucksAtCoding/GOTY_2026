@@ -3,7 +3,7 @@ from settings import *
 from sprites.platforms import Platform
 from sprites.coins import Coin
 from sprites.enemy_factory import spawn_boss
-from .base import Room, RoomExit
+from .base import Room
 
 ROOM_ID = "boss"
 DIFFICULTY = ROOM_DIFFICULTY[ROOM_ID]
@@ -29,6 +29,16 @@ def build(game_difficulty="normal"):
     for (x, y, w, h) in level_data:
         platforms.add(Platform(x, y, w, h))
 
+    # Невидимые стены по краям арены — не дают выйти за пределы уровня.
+    # Слева и справа выхода из комнаты босса теперь нет вообще (см. exits ниже) —
+    # стены не пускают ни за левый, ни за правый край арены.
+    wall_thickness = 40
+    left_wall = Platform(-wall_thickness, 0, wall_thickness, ROOM_HEIGHT, color=BLACK)
+    left_wall.image.set_alpha(0)
+    right_wall = Platform(ROOM_WIDTH, 0, wall_thickness, ROOM_HEIGHT, color=BLACK)
+    right_wall.image.set_alpha(0)
+    platforms.add(left_wall, right_wall)
+
     # Небольшая награда по краям арены — не мешает бою в центре
     coin_positions = [
         (150, HEIGHT - 190), (180, HEIGHT - 190),
@@ -44,15 +54,12 @@ def build(game_difficulty="normal"):
     )
     enemies.add(boss)
 
-    # Дверь назад — на вершину. Дальше пути нет: победа над боссом сразу
-    # завершает игру (см. PlayingState._tick_gameplay в game.py).
-    exits = [
-        RoomExit(
-            rect=pygame.Rect(0, 0, 10, ROOM_HEIGHT),
-            target_room="summit",
-            entry_side="right",
-        ),
-    ]
+    # Дверь назад убрана: как только игрок попал в комнату босса, выйти из неё
+    # нельзя (в том числе влево, откуда пришёл с вершины) — только победа над
+    # боссом сразу завершает игру (см. PlayingState._tick_gameplay в game.py).
+    # Левую невидимую стену выше (left_wall) достаточно, чтобы заблокировать
+    # проход — отдельный RoomExit здесь больше не нужен.
+    exits = []
 
     spawn_points = {
         "default": (60, HEIGHT - 100),

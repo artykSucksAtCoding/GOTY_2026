@@ -112,9 +112,14 @@ WEAPON_PICKUP_SIZE = 32     # размер иконки предмета, леж
 # игры, подбор оружия в комнате) — по умолчанию считаем это "50% уверенности".
 WEAPON_RECOGNITION_DEFAULT_CONFIDENCE = 0.5
 
+# Порог уверенности модели, ниже которого рисунок считается нераспознанным —
+# оружие игрока не меняется, но урон урезается до WEAPON_RECOGNITION_DEFAULT_CONFIDENCE
+# (см. Game.finish_weapon_drawing в game.py).
+WEAPON_RECOGNITION_MIN_CONFIDENCE = 0.7
+
 # --- Стрелы лука ---
 ARROW_ICON_PATH = "images/weapons/arrow.png"   # плейсхолдер — подставь свой спрайт стрелы
-ARROW_SIZE = 10
+ARROW_SIZE = 20
 ARROW_SPEED = 13.0
 ARROW_LIFETIME_FRAMES = int(2.0 * FPS)   # самоуничтожение, если ни во что не попала
 
@@ -142,6 +147,7 @@ DRAW_BRUSH_SIZE = 4             # толщина линии кистью
 DRAW_SLOWMO_DIVISOR = 10        # во столько раз замедляется игровой процесс, пока открыт холст
 DRAW_OVERLAY_ALPHA = 195        # степень затемнения фона под холстом (0-255)
 DRAW_RESULT_MESSAGE_FRAMES = int(1.4 * FPS)  # сколько кадров держится надпись с распознанным оружием
+DRAW_COOLDOWN_FRAMES = int(3.5 * FPS)  # кулдаун на рисование после закрытия холста (в кадрах)
 
 # Сопоставление class_names из model.joblib (у обученной модели это ["Axe", "Bow",
 # "Sword"]) с внутренними id оружия в игре. Сравнение регистронезависимое —

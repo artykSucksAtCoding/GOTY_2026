@@ -87,6 +87,7 @@ class Game:
         self.draw_slowmo_counter = 0              # счётчик кадров для эффекта замедления
         self.draw_result_text = ""                # что показать после распознавания ("Топор!" и т.п.)
         self.draw_result_timer = 0
+        self.draw_cooldown_timer = 0              # пока > 0, рисовать снова нельзя (см. DRAW_COOLDOWN_FRAMES)
 
         # --- настройки: графика ---
         self.theme_index = 0          # индекс в BG_THEMES
@@ -198,23 +199,33 @@ class Game:
         )
 
     def finish_weapon_drawing(self):
-        """Закрывает холст — вызывается по отпусканию DRAW_WEAPON_KEY.
-        Прогоняет нарисованное через модель и, если распознавание удалось,
-        переключает оружие игрока."""
+        """Закрывает холст — вызывается по отпусканию DRAW_WEAPON_KEY. Холст
+        убирается с экрана сразу же; распознанное оружие показывается крупной
+        надписью вверху экрана (см. draw_weapon_result_banner), которая тоже
+        гаснет сама по себе через DRAW_RESULT_MESSAGE_FRAMES кадров. После
+        закрытия холста начинается кулдаун (DRAW_COOLDOWN_FRAMES) — рисовать
+        снова можно только когда он истечёт."""
         self.drawing_mode = False
         self.draw_last_pos = None
 
         weapon_id, confidence = self.weapon_recognizer.predict(self.draw_canvas)
-        if weapon_id is not None and self.player is not None:
+        if weapon_id is not None and confidence >= WEAPON_RECOGNITION_MIN_CONFIDENCE and self.player is not None:
             self.player.equip_weapon(weapon_id, confidence)
             names = {"sword": "Меч!", "axe": "Топор!", "bow": "Лук!"}
             weapon_name = names.get(weapon_id, weapon_id)
             self.draw_result_text = f"{weapon_name} ({confidence * 100:.0f}%)"
+        elif weapon_id is not None:
+            # Модель что-то распознала, но недостаточно уверенно — оружие
+            # оставляем прежним, но со сниженным до 50% уроном.
+            if self.player is not None:
+                self.player.weapon_confidence = WEAPON_RECOGNITION_DEFAULT_CONFIDENCE
+            self.draw_result_text = "Оружие не распознано"
         elif not self.weapon_recognizer.available:
             self.draw_result_text = "Модель распознавания недоступна"
         else:
             self.draw_result_text = "Не удалось распознать оружие"
         self.draw_result_timer = DRAW_RESULT_MESSAGE_FRAMES
+        self.draw_cooldown_timer = DRAW_COOLDOWN_FRAMES
 
     def change_state(self, new_state):
         """Запрашивает смену состояния — произойдёт в начале следующего кадра."""
@@ -333,23 +344,68 @@ class State:
 # СОСТОЯНИЕ: СТАРТОВОЕ МЕНЮ
 # ===========================================================
 class MenuState(State):
+    # (внутреннее имя действия, подпись на кнопке, подсказка с клавишей)
+    BUTTONS = [
+        ("play", "ИГРАТЬ", "SPACE / ENTER"),
+        ("settings", "НАСТРОЙКИ", "O"),
+        ("leaderboard", "ЛИДЕРБОРД", "L"),
+        ("quit", "ВЫХОД", "ESC"),
+    ]
+
     def __init__(self, game):
         super().__init__(game)
         self.time = 0
         # В главном меню музыки быть не должно — глушим на случай возврата
         # сюда через M из паузы/победы/поражения
         self.game.stop_music()
+        self.hovered_action = None
+        self.buttons = self._build_buttons()
+
+    def _build_buttons(self):
+        """Считает прямоугольники кнопок один раз — ими пользуются и клик мышью
+        (handle_event), и отрисовка (draw), чтобы позиции не могли разъехаться."""
+        button_width, button_height = 460, 46
+        gap = 14
+        start_y = 180
+        buttons = []
+        for i, (action, label, hint) in enumerate(self.BUTTONS):
+            rect = pygame.Rect(0, 0, button_width, button_height)
+            rect.center = (WIDTH // 2, start_y + i * (button_height + gap))
+            buttons.append({"action": action, "label": label, "hint": hint, "rect": rect})
+        return buttons
+
+    def _activate(self, action):
+        """Общая точка входа что для клавиатуры, что для клика мышью по кнопке —
+        чтобы оба способа управления гарантированно вели к одному и тому же."""
+        g = self.game
+        if action == "play":
+            g.change_state(DifficultySelectState(g))
+        elif action == "settings":
+            g.change_state(SettingsState(g))
+        elif action == "leaderboard":
+            g.change_state(LeaderboardState(g))
+        elif action == "quit":
+            g.running = False
 
     def handle_event(self, event):
         if event.type == pygame.KEYDOWN:
             if event.key in (pygame.K_SPACE, pygame.K_RETURN):
-                self.game.change_state(DifficultySelectState(self.game))
+                self._activate("play")
             elif event.key == pygame.K_o:
-                self.game.change_state(SettingsState(self.game))
+                self._activate("settings")
             elif event.key == pygame.K_l:
-                self.game.change_state(LeaderboardState(self.game))
+                self._activate("leaderboard")
             elif event.key == pygame.K_ESCAPE:
-                self.game.running = False
+                self._activate("quit")
+        elif event.type == pygame.MOUSEMOTION:
+            self.hovered_action = next(
+                (b["action"] for b in self.buttons if b["rect"].collidepoint(event.pos)), None
+            )
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            for button in self.buttons:
+                if button["rect"].collidepoint(event.pos):
+                    self._activate(button["action"])
+                    break
 
     def update(self):
         self.time += 1
@@ -358,20 +414,25 @@ class MenuState(State):
         g = self.game
         draw_dark_background(screen, self.time, g.theme, g.spore_count)
 
-        draw_text_centered(screen, "Draw and attack!", g.title_font, g.theme["accent"], HEIGHT // 2 - 100)
-        draw_text_centered(screen, "Нажми ПРОБЕЛ или ENTER, чтобы выбрать сложность и начать", g.font, WHITE, HEIGHT // 2 + 10)
+        draw_text_centered(screen, "Draw and attack!", g.title_font, g.theme["accent"], 80)
+
+        for button in self.buttons:
+            is_hovered = button["action"] == self.hovered_action
+            bg_color = g.theme["accent"] if is_hovered else (40, 40, 50)
+            text_color = BLACK if is_hovered else WHITE
+            pygame.draw.rect(screen, bg_color, button["rect"], border_radius=8)
+            pygame.draw.rect(screen, g.theme["accent"], button["rect"], width=2, border_radius=8)
+
+            label_surf = g.font.render(f"{button['label']}  ({button['hint']})", True, text_color)
+            label_rect = label_surf.get_rect(center=button["rect"].center)
+            screen.blit(label_surf, label_rect)
+
+        draw_text_centered(screen, "Мышью — клик по кнопке, либо клавишами (см. подсказки на кнопках)",
+                            g.small_font, GRAY, HEIGHT - 92)
         draw_text_centered(screen, "Управление: A/D или стрелки — движение, SPACE/W — прыжок",
-                            g.small_font, GRAY, HEIGHT // 2 + 60)
-        draw_text_centered(screen, "Двойной прыжок в воздухе, SHIFT — рывок (дэш)",
-                            g.small_font, GRAY, HEIGHT // 2 + 85)
-        draw_text_centered(screen, "J/X — атака, вниз+J в воздухе — удар вниз",
-                            g.small_font, GRAY, HEIGHT // 2 + 108)
-        draw_text_centered(screen, "P/ESC — пауза, R — рестарт, ESC в меню — выход",
-                            g.small_font, GRAY, HEIGHT // 2 + 131)
-        draw_text_centered(screen, "O — настройки",
-                            g.small_font, GRAY, HEIGHT // 2 + 154)
-        draw_text_centered(screen, "L — лидерборд",
-                            g.small_font, GRAY, HEIGHT // 2 + 177)
+                            g.small_font, GRAY, HEIGHT - 68)
+        draw_text_centered(screen, "Двойной прыжок, SHIFT — рывок, J/X — атака, P/ESC в игре — пауза",
+                            g.small_font, GRAY, HEIGHT - 44)
 
 
 # ===========================================================
@@ -439,33 +500,70 @@ class DifficultySelectState(State):
 class SettingsState(State):
     """Экран настроек из главного меню. Навигация: W/S или стрелки вверх/вниз —
     выбор пункта, A/D или стрелки влево/вправо — изменение значения,
-    ESC/M — вернуться в меню. Каждое изменение применяется мгновенно."""
+    ESC/M — вернуться в меню. Те же действия доступны мышью: клик по стрелкам
+    "<"/">" у значения меняет его, клик по строке просто выделяет её.
+    Каждое изменение применяется мгновенно."""
 
     # количество пунктов, которые можно листать стрелками влево/вправо
     OPTION_COUNT = 5  # тема, качество эффектов, полный экран, музыка, эффекты
+
+    START_Y = 160
+    ROW_HEIGHT = 42
+    LABEL_X = 150     # левый край подписи пункта
+    VALUE_X = 710     # центр текста значения — стрелки </> считаются от его краёв
 
     def __init__(self, game):
         super().__init__(game)
         self.time = 0
         self.selected = 0
+        self.rows = self._build_rows()
+
+    def _build_rows(self):
+        """Прямоугольники строк и стрелок "<"/">". row_rect (клик по строке —
+        просто выделяет её) фиксирован, а left_rect/right_rect уточняются в
+        draw() по фактической ширине текста значения (у разных пунктов оно
+        разной длины), чтобы стрелки никогда не наезжали на текст."""
+        rows = []
+        for i in range(self.OPTION_COUNT):
+            y = self.START_Y + i * self.ROW_HEIGHT
+            row_rect = pygame.Rect(0, 0, 760, 36)
+            row_rect.center = (WIDTH // 2, y)
+            rows.append({
+                "row_rect": row_rect,
+                "left_rect": pygame.Rect(0, 0, 30, 30),
+                "right_rect": pygame.Rect(0, 0, 30, 30),
+            })
+        return rows
 
     def handle_event(self, event):
-        if event.type != pygame.KEYDOWN:
-            return
-
         g = self.game
 
-        if event.key in (pygame.K_ESCAPE, pygame.K_m):
-            g.change_state(MenuState(g))
-            return
+        if event.type == pygame.KEYDOWN:
+            if event.key in (pygame.K_ESCAPE, pygame.K_m):
+                g.change_state(MenuState(g))
+                return
 
-        if event.key in (pygame.K_UP, pygame.K_w):
-            self.selected = (self.selected - 1) % self.OPTION_COUNT
-        elif event.key in (pygame.K_DOWN, pygame.K_s):
-            self.selected = (self.selected + 1) % self.OPTION_COUNT
-        elif event.key in (pygame.K_LEFT, pygame.K_a, pygame.K_RIGHT, pygame.K_d):
-            direction = -1 if event.key in (pygame.K_LEFT, pygame.K_a) else 1
-            self._adjust(self.selected, direction)
+            if event.key in (pygame.K_UP, pygame.K_w):
+                self.selected = (self.selected - 1) % self.OPTION_COUNT
+            elif event.key in (pygame.K_DOWN, pygame.K_s):
+                self.selected = (self.selected + 1) % self.OPTION_COUNT
+            elif event.key in (pygame.K_LEFT, pygame.K_a, pygame.K_RIGHT, pygame.K_d):
+                direction = -1 if event.key in (pygame.K_LEFT, pygame.K_a) else 1
+                self._adjust(self.selected, direction)
+
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            for i, row in enumerate(self.rows):
+                if row["left_rect"].collidepoint(event.pos):
+                    self.selected = i
+                    self._adjust(i, -1)
+                    break
+                elif row["right_rect"].collidepoint(event.pos):
+                    self.selected = i
+                    self._adjust(i, 1)
+                    break
+                elif row["row_rect"].collidepoint(event.pos):
+                    self.selected = i
+                    break
 
     def _adjust(self, index, direction):
         g = self.game
@@ -509,27 +607,53 @@ class SettingsState(State):
 
         draw_text_centered(screen, "НАСТРОЙКИ", g.big_font, g.theme["accent"], 70)
 
-        rows = [
-            ("Тема оформления", g.theme["name"]),
-            ("Качество эффектов", EFFECTS_QUALITY_LABELS[g.effects_quality]),
-            ("Полноэкранный режим", "Вкл" if g.fullscreen else "Выкл"),
-            ("Громкость музыки", f"{int(g.master_music_volume * 100)}%"),
-            ("Громкость эффектов", f"{int(g.master_sfx_volume * 100)}%"),
+        values = [
+            g.theme["name"],
+            EFFECTS_QUALITY_LABELS[g.effects_quality],
+            "Вкл" if g.fullscreen else "Выкл",
+            f"{int(g.master_music_volume * 100)}%",
+            f"{int(g.master_sfx_volume * 100)}%",
+        ]
+        labels = [
+            "Тема оформления",
+            "Качество эффектов",
+            "Полноэкранный режим",
+            "Громкость музыки",
+            "Громкость эффектов",
         ]
 
-        start_y = 160
-        row_height = 42
-        for i, (label, value) in enumerate(rows):
-            y = start_y + i * row_height
+        mouse_pos = pygame.mouse.get_pos()
+
+        for i, (label, value) in enumerate(zip(labels, values)):
+            y = self.START_Y + i * self.ROW_HEIGHT
+            row = self.rows[i]
             is_selected = i == self.selected
             label_color = g.theme["accent"] if is_selected else WHITE
             marker = "> " if is_selected else "   "
-            draw_text_centered(screen, f"{marker}{label}", g.font, label_color, y, x=WIDTH // 2 - 120)
-            draw_text_centered(screen, f"< {value} >" if is_selected else value,
-                                g.font, label_color, y, x=WIDTH // 2 + 220)
+
+            label_surf = g.font.render(f"{marker}{label}", True, label_color)
+            label_rect = label_surf.get_rect(midleft=(self.LABEL_X, y))
+            screen.blit(label_surf, label_rect)
+
+            value_surf = g.font.render(value, True, label_color)
+            value_rect = value_surf.get_rect(center=(self.VALUE_X, y))
+            screen.blit(value_surf, value_rect)
+
+            # стрелки "<"/">" всегда кликабельны, ставим их сразу за краями текста
+            # значения — так они никогда не наезжают на сам текст независимо от
+            # его длины (у темы оформления она заметно больше, чем у "Вкл"/"Выкл")
+            row["left_rect"].center = (value_rect.left - 25, y)
+            row["right_rect"].center = (value_rect.right + 25, y)
+
+            for arrow_rect, glyph in ((row["left_rect"], "<"), (row["right_rect"], ">")):
+                is_hovered = arrow_rect.collidepoint(mouse_pos)
+                arrow_color = g.theme["accent"] if (is_hovered or is_selected) else GRAY
+                arrow_surf = g.font.render(glyph, True, arrow_color)
+                arrow_text_rect = arrow_surf.get_rect(center=arrow_rect.center)
+                screen.blit(arrow_surf, arrow_text_rect)
 
         # блок с управлением — просто справочная информация, не редактируется
-        controls_y = start_y + len(rows) * row_height + 30
+        controls_y = self.START_Y + len(labels) * self.ROW_HEIGHT + 30
         draw_text_centered(screen, "Управление", g.font, GRAY, controls_y)
         draw_text_centered(screen, "A/D или стрелки — движение, SPACE/W — прыжок (двойной в воздухе)",
                             g.small_font, GRAY, controls_y + 28)
@@ -538,8 +662,11 @@ class SettingsState(State):
         draw_text_centered(screen, "P/ESC — пауза, R — рестарт",
                             g.small_font, GRAY, controls_y + 72)
 
-        draw_text_centered(screen, "↑/↓ — выбор пункта, ←/→ — изменить значение, ESC/M — назад",
-                            g.small_font, GRAY, HEIGHT - 30)
+        draw_text_centered(
+            screen,
+            "↑/↓ или клик по строке — выбор, ←/→ или клик по стрелкам < > — изменить значение, ESC/M — назад",
+            g.small_font, GRAY, HEIGHT - 30,
+        )
 
 
 # ===========================================================
@@ -686,7 +813,7 @@ class PlayingState(State):
                 # останется "подвешен", а KEYUP DRAW_WEAPON_KEY придёт уже
                 # в PausedState и не закроет его как надо.
                 self.game.change_state(PausedState(self.game))
-            elif event.key == DRAW_WEAPON_KEY and not g.drawing_mode:
+            elif event.key == DRAW_WEAPON_KEY and not g.drawing_mode and g.draw_cooldown_timer <= 0:
                 g.start_weapon_drawing()
         elif event.type == pygame.KEYUP:
             if event.key == DRAW_WEAPON_KEY and g.drawing_mode:
@@ -709,6 +836,10 @@ class PlayingState(State):
         # --- надпись с результатом распознавания угасает сама по себе ---
         if g.draw_result_timer > 0:
             g.draw_result_timer -= 1
+
+        # --- кулдаун на повторное рисование тоже тикает независимо от слоумо ---
+        if g.draw_cooldown_timer > 0:
+            g.draw_cooldown_timer -= 1
 
         if g.drawing_mode:
             # Пока открыт холст, игровой процесс не стоит на месте совсем,
@@ -834,8 +965,10 @@ class PlayingState(State):
         draw_world(self.game, screen)
         if self.game.boss is not None and self.game.boss.hp > 0:
             draw_boss_health_bar(screen, self.game)
-        if self.game.drawing_mode or self.game.draw_result_timer > 0:
+        if self.game.drawing_mode:
             draw_weapon_canvas_overlay(self.game, screen)
+        elif self.game.draw_result_timer > 0:
+            draw_weapon_result_banner(self.game, screen)
 
 
 # ===========================================================
@@ -1137,6 +1270,17 @@ def draw_weapon_icon(screen, game):
     screen.blit(confidence_text, (x, y + WEAPON_ICON_HUD_SIZE + 22))
 
 
+def draw_weapon_cooldown_indicator(game, screen):
+    """Крупная красная надпись внизу экрана, пока действует кулдаун на
+    повторное рисование оружия (см. Game.finish_weapon_drawing)."""
+    seconds_left = game.draw_cooldown_timer / FPS
+    cooldown_text = game.font.render(
+        f"Рисование через {seconds_left:.1f}с", True, RED
+    )
+    cooldown_rect = cooldown_text.get_rect(center=(WIDTH // 2, HEIGHT - 32))
+    screen.blit(cooldown_text, cooldown_rect)
+
+
 def draw_world(game: Game, screen):
     bg_image = game.backgrounds_dict.get(game.room_id)
     if bg_image is not None:
@@ -1219,6 +1363,8 @@ def draw_world(game: Game, screen):
     screen.blit(score_text, (16, 12))
     draw_hp_bar(screen, game.player, game.theme)
     draw_weapon_icon(screen, game)
+    if game.draw_cooldown_timer > 0:
+        draw_weapon_cooldown_indicator(game, screen)
 
     timer_text = game.font.render(format_time(game.run_timer_frames / FPS), True, WHITE)
     screen.blit(timer_text, (WIDTH - timer_text.get_width() - 16, 12))
@@ -1226,8 +1372,8 @@ def draw_world(game: Game, screen):
 
 def draw_weapon_canvas_overlay(game, screen):
     """Затемнение поверх игры + белый холст, на котором игрок рисует оружие
-    мышью, пока зажата DRAW_WEAPON_KEY. После отпускания клавиши холст ещё
-    ненадолго остаётся на экране, показывая результат распознавания."""
+    мышью, пока зажата DRAW_WEAPON_KEY. Как только клавиша отпускается, холст
+    сразу пропадает (см. draw_weapon_result_banner для надписи с результатом)."""
     overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     overlay.fill((0, 0, 0, DRAW_OVERLAY_ALPHA))
     screen.blit(overlay, (0, 0))
@@ -1236,11 +1382,25 @@ def draw_weapon_canvas_overlay(game, screen):
     screen.blit(game.draw_canvas, canvas_rect)
     pygame.draw.rect(screen, game.theme["accent"], canvas_rect, 3)
 
-    if game.drawing_mode:
-        hint_text = game.small_font.render(
-            "Рисуй оружие мышью — отпусти R, чтобы распознать", True, WHITE
-        )
-    else:
-        hint_text = game.font.render(game.draw_result_text, True, game.theme["accent"])
+    hint_text = game.small_font.render(
+        "Рисуй оружие мышью — отпусти R, чтобы распознать", True, WHITE
+    )
     hint_rect = hint_text.get_rect(center=(WIDTH // 2, canvas_rect.top - 24))
     screen.blit(hint_text, hint_rect)
+
+
+def draw_weapon_result_banner(game, screen):
+    """Крупная надпись вверху экрана с распознанным оружием — появляется сразу
+    после закрытия холста (см. Game.finish_weapon_drawing) и сама гаснет через
+    DRAW_RESULT_MESSAGE_FRAMES кадров (game.draw_result_timer)."""
+    banner_text = game.big_font.render(game.draw_result_text, True, game.theme["accent"])
+    banner_rect = banner_text.get_rect(center=(WIDTH // 2, 48))
+
+    # Полупрозрачная плашка под текстом — чтобы крупные буквы не терялись на фоне уровня
+    padding_x, padding_y = 24, 10
+    bg_rect = banner_rect.inflate(padding_x * 2, padding_y * 2)
+    bg_surf = pygame.Surface(bg_rect.size, pygame.SRCALPHA)
+    bg_surf.fill((0, 0, 0, 160))
+    screen.blit(bg_surf, bg_rect)
+
+    screen.blit(banner_text, banner_rect)
